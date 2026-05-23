@@ -1,0 +1,32 @@
+name: Validate infra
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    env:
+      CADDY_ENV_FILE: env/caddy.env.example
+      POSTGRES_ENV_FILE: env/postgres.env.example
+      BACKEND_ENV_FILE: env/backend.env.example
+      PUBLIC_SITE_ENV_FILE: env/public-site.env.example
+      ADMIN_APP_ENV_FILE: env/admin-app.env.example
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate Docker Compose
+        run: docker compose --env-file versions/production.env -f docker-compose.prod.yml config -q
+
+      - name: Validate Caddyfile
+        run: |
+          docker run --rm \
+            -e ACME_EMAIL=admin@soulcuts.com.ua \
+            -v "$PWD/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            caddy:2.8-alpine \
+            caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+

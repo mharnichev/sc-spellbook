@@ -1,0 +1,74 @@
+name: Deploy production
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      CADDY_ENV_FILE: env/caddy.env.example
+      POSTGRES_ENV_FILE: env/postgres.env.example
+      BACKEND_ENV_FILE: env/backend.env.example
+      PUBLIC_SITE_ENV_FILE: env/public-site.env.example
+      ADMIN_APP_ENV_FILE: env/admin-app.env.example
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate Docker Compose
+        run: docker compose --env-file versions/production.env -f docker-compose.prod.yml config -q
+
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.PRODUCTION_KNOWN_HOSTS }}
+        run: |
+          install -m 0700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 0600 ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 0644 ~/.ssh/known_hosts
+
+      - name: Upload release
+        env:
+          HOST: ${{ secrets.PRODUCTION_HOST }}
+          PORT: ${{ secrets.PRODUCTION_PORT }}
+          USER: ${{ secrets.PRODUCTION_USER }}
+        run: |
+          release_id="$(date -u +%Y%m%dT%H%M%SZ)-${GITHUB_SHA::7}"
+          echo "RELEASE_ID=$release_id" >> "$GITHUB_ENV"
+          ssh -p "${PORT:-22}" "$USER@$HOST" "mkdir -p /opt/soulcuts/releases/$release_id"
+          rsync -az --delete \
+            -e "ssh -p ${PORT:-22}" \
+            --exclude ".git" \
+            ./ "$USER@$HOST:/opt/soulcuts/releases/$release_id/"
+
+      - name: Login to GHCR on server
+        env:
+          HOST: ${{ secrets.PRODUCTION_HOST }}
+          PORT: ${{ secrets.PRODUCTION_PORT }}
+          USER: ${{ secrets.PRODUCTION_USER }}
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+        run: |
+          printf '%s' "$GHCR_TOKEN" | ssh -p "${PORT:-22}" "$USER@$HOST" \
+            "docker login ghcr.io -u '$GHCR_USERNAME' --password-stdin"
+
+      - name: Deploy release
+        env:
+          HOST: ${{ secrets.PRODUCTION_HOST }}
+          PORT: ${{ secrets.PRODUCTION_PORT }}
+          USER: ${{ secrets.PRODUCTION_USER }}
+        run: |
+          ssh -p "${PORT:-22}" "$USER@$HOST" \
+            "cd /opt/soulcuts/releases/$RELEASE_ID && bash scripts/deploy.sh"
+

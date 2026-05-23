@@ -1,0 +1,114 @@
+name: soulcuts
+
+services:
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    env_file:
+      - ${CADDY_ENV_FILE:-/opt/soulcuts/env/caddy.env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      public-site:
+        condition: service_started
+      admin-app:
+        condition: service_started
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  public-site:
+    image: ${PUBLIC_SITE_IMAGE:?PUBLIC_SITE_IMAGE is required}
+    restart: unless-stopped
+    env_file:
+      - ${PUBLIC_SITE_ENV_FILE:-/opt/soulcuts/env/public-site.env}
+    environment:
+      NITRO_HOST: 0.0.0.0
+      NITRO_PORT: "3000"
+      NODE_ENV: production
+    expose:
+      - "3000"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  admin-app:
+    image: ${ADMIN_APP_IMAGE:?ADMIN_APP_IMAGE is required}
+    restart: unless-stopped
+    env_file:
+      - ${ADMIN_APP_ENV_FILE:-/opt/soulcuts/env/admin-app.env}
+    environment:
+      NITRO_HOST: 0.0.0.0
+      NITRO_PORT: "3000"
+      NODE_ENV: production
+    expose:
+      - "3000"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  backend:
+    image: ${BACKEND_IMAGE:?BACKEND_IMAGE is required}
+    restart: unless-stopped
+    env_file:
+      - ${POSTGRES_ENV_FILE:-/opt/soulcuts/env/postgres.env}
+      - ${BACKEND_ENV_FILE:-/opt/soulcuts/env/backend.env}
+    environment:
+      APP_ENV: production
+      DEBUG: "false"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      UPLOAD_DIR: /app/data/uploads
+      CORS_ORIGINS: https://soulcuts.com.ua,https://www.soulcuts.com.ua,https://admin.soulcuts.com.ua
+    command: >
+      sh -c "alembic upgrade head &&
+      uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers $${API_WORKERS:-2}"
+    expose:
+      - "8000"
+    volumes:
+      - /opt/soulcuts/data/uploads:/app/data/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/public/health', timeout=5)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    env_file:
+      - ${POSTGRES_ENV_FILE:-/opt/soulcuts/env/postgres.env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  caddy_data:
+  caddy_config:
+  postgres_data:
+
