@@ -181,6 +181,26 @@ sudo nano /opt/soulcuts/env/caddy.env
 
 Use a long random `SECRET_KEY` and strong `POSTGRES_PASSWORD`.
 
+For backend email notifications, set these values in `/opt/soulcuts/env/backend.env` using real SMTP credentials from the selected mail provider:
+
+```env
+EMAIL_NOTIFICATIONS_ENABLED=true
+SMTP_HOST=<provider-smtp-host>
+SMTP_PORT=587
+SMTP_USERNAME=<provider-smtp-login>
+SMTP_PASSWORD=<provider-smtp-password>
+SMTP_FROM_EMAIL=bookings@your-domain.com
+SMTP_FROM_NAME=Soulcuts
+SMTP_USE_TLS=true
+SMTP_TIMEOUT_SECONDS=10
+```
+
+After changing backend environment values, restart the backend service:
+
+```bash
+docker compose --project-name soulcuts --env-file versions/production.env -f docker-compose.prod.yml restart backend
+```
+
 Redis is not included because the inspected backend does not currently require it. Add it later only if the backend gets a real Redis dependency such as queues, caching, or rate limiting.
 
 ## Cloudflare DNS
