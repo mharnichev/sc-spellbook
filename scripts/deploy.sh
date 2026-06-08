@@ -69,6 +69,7 @@ require_file "${APP_DIR}/env/caddy.env"
 require_file "${APP_DIR}/env/postgres.env"
 require_file "${APP_DIR}/env/backend.env"
 require_file "${APP_DIR}/env/public-site.env"
+require_file "${APP_DIR}/env/blog.env"
 require_file "${APP_DIR}/env/admin-app.env"
 
 mkdir -p "${APP_DIR}/data/uploads" "${APP_DIR}/backups" "${APP_DIR}/releases"
@@ -91,10 +92,10 @@ compose up -d --remove-orphans
 wait_for_service postgres 120
 wait_for_service backend 180
 wait_for_service public-site 120
+wait_for_service blog 120
 wait_for_service admin-app 120
 wait_for_service caddy 120
 
 ln -sfn "${ROOT_DIR}" "${CURRENT_LINK}"
 
 echo "Deployment completed: ${ROOT_DIR}"
-

@@ -32,16 +32,19 @@ jobs:
       - name: Lint Nuxt apps
         run: |
           pnpm --filter @apps/barbershop lint
+          pnpm --filter @apps/blog lint
           pnpm --filter @apps/backoffice lint
 
       - name: Build Nuxt apps
         run: |
           pnpm --filter @apps/barbershop build
+          NUXT_APP_BASE_URL=/blog/ NUXT_PUBLIC_BLOG_SITE_URL=https://soulcuts.com.ua/blog pnpm --filter @apps/blog build
           pnpm --filter @apps/backoffice build
 
       - name: Set image tags
         run: |
           echo "PUBLIC_SITE_IMAGE=ghcr.io/${GITHUB_REPOSITORY}/public-site:${GITHUB_SHA}" >> "$GITHUB_ENV"
+          echo "BLOG_IMAGE=ghcr.io/${GITHUB_REPOSITORY}/blog:${GITHUB_SHA}" >> "$GITHUB_ENV"
           echo "ADMIN_APP_IMAGE=ghcr.io/${GITHUB_REPOSITORY}/admin:${GITHUB_SHA}" >> "$GITHUB_ENV"
           echo "SHORT_SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
 
@@ -67,6 +70,21 @@ jobs:
           cache-from: type=gha,scope=public-site
           cache-to: type=gha,mode=max,scope=public-site
 
+      - name: Build and push blog
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/blog/Dockerfile
+          push: true
+          tags: |
+            ${{ env.BLOG_IMAGE }}
+            ghcr.io/${{ github.repository }}/blog:main
+          build-args: |
+            NUXT_APP_BASE_URL=/blog/
+            NUXT_PUBLIC_BLOG_SITE_URL=https://soulcuts.com.ua/blog
+          cache-from: type=gha,scope=blog
+          cache-to: type=gha,mode=max,scope=blog
+
       - name: Build and push admin app
         uses: docker/build-push-action@v6
         with:
@@ -90,6 +108,7 @@ jobs:
         working-directory: infra
         run: |
           sed -i "s|^PUBLIC_SITE_IMAGE=.*|PUBLIC_SITE_IMAGE=${PUBLIC_SITE_IMAGE}|" versions/production.env
+          sed -i "s|^BLOG_IMAGE=.*|BLOG_IMAGE=${BLOG_IMAGE}|" versions/production.env
           sed -i "s|^ADMIN_APP_IMAGE=.*|ADMIN_APP_IMAGE=${ADMIN_APP_IMAGE}|" versions/production.env
 
       - name: Open infra PR
@@ -104,7 +123,7 @@ jobs:
             Updates production frontend images:
 
             - Public site: `${{ env.PUBLIC_SITE_IMAGE }}`
+            - Blog: `${{ env.BLOG_IMAGE }}`
             - Admin app: `${{ env.ADMIN_APP_IMAGE }}`
 
             Merge this PR to deploy production from the infra repo.
-

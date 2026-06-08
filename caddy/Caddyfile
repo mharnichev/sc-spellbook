@@ -16,6 +16,12 @@
 soulcuts.com.ua, www.soulcuts.com.ua {
 	import security_headers
 	encode zstd gzip
+
+	redir /blog /blog/ 308
+
+	@blog path /blog/*
+	reverse_proxy @blog blog:3000
+
 	reverse_proxy public-site:3000
 }
 

@@ -17,6 +17,8 @@ services:
     depends_on:
       public-site:
         condition: service_started
+      blog:
+        condition: service_started
       admin-app:
         condition: service_started
       backend:
@@ -40,6 +42,26 @@ services:
       - "3000"
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  blog:
+    image: ${BLOG_IMAGE:?BLOG_IMAGE is required}
+    restart: unless-stopped
+    env_file:
+      - ${BLOG_ENV_FILE:-/opt/soulcuts/env/blog.env}
+    environment:
+      NITRO_HOST: 0.0.0.0
+      NITRO_PORT: "3000"
+      NODE_ENV: production
+      NUXT_APP_BASE_URL: /blog/
+      NUXT_PUBLIC_BLOG_SITE_URL: https://soulcuts.com.ua/blog
+    expose:
+      - "3000"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/blog/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\""]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -111,4 +133,3 @@ volumes:
   caddy_data:
   caddy_config:
   postgres_data:
-

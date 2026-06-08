@@ -64,6 +64,7 @@ compose up -d --remove-orphans
 wait_for_service postgres 120
 wait_for_service backend 180
 wait_for_service public-site 120
+wait_for_service blog 120
 wait_for_service admin-app 120
 wait_for_service caddy 120
 

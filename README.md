@@ -23,6 +23,7 @@ This repo intentionally keeps the first deployment stage simple:
 | --- | --- |
 | `soulcuts.com.ua` | Nuxt public barbershop site |
 | `www.soulcuts.com.ua` | Nuxt public barbershop site |
+| `soulcuts.com.ua/blog` | Nuxt blog app |
 | `admin.soulcuts.com.ua` | Nuxt admin/backoffice app |
 | `api.soulcuts.com.ua` | FastAPI backend |
 
@@ -33,9 +34,10 @@ The admin app is not routed from the main domain. Caddy only sends `admin.soulcu
 The frontend repo is a pnpm monorepo:
 
 - `apps/barbershop` is the public Nuxt app.
+- `apps/blog` is the Nuxt blog app served under `/blog`.
 - `apps/backoffice` is the admin Nuxt app.
-- Both apps already have separate Dockerfiles.
-- Both apps read `NUXT_PUBLIC_API_BASE` through Nuxt runtime config.
+- The Nuxt apps already have separate Dockerfiles.
+- The Nuxt apps read `NUXT_PUBLIC_API_BASE` through Nuxt runtime config.
 
 The backend repo is FastAPI:
 
@@ -52,6 +54,7 @@ Image names used by this repo:
 
 ```env
 PUBLIC_SITE_IMAGE=ghcr.io/mharnichev/sc-fe/public-site:<tag>
+BLOG_IMAGE=ghcr.io/mharnichev/sc-fe/blog:<tag>
 ADMIN_APP_IMAGE=ghcr.io/mharnichev/sc-fe/admin:<tag>
 BACKEND_IMAGE=ghcr.io/mharnichev/sc-be/api:<tag>
 ```
@@ -74,6 +77,7 @@ The app repositories should eventually adopt the production Dockerfile examples 
 │   └── Caddyfile
 ├── env/
 │   ├── admin-app.env.example
+│   ├── blog.env.example
 │   ├── backend.env.example
 │   ├── caddy.env.example
 │   ├── postgres.env.example
@@ -153,6 +157,7 @@ Secrets are not committed. On the server, create:
 /opt/soulcuts/env/postgres.env
 /opt/soulcuts/env/backend.env
 /opt/soulcuts/env/public-site.env
+/opt/soulcuts/env/blog.env
 /opt/soulcuts/env/admin-app.env
 ```
 
@@ -167,6 +172,7 @@ install -m 0600 /tmp/caddy.env.example /opt/soulcuts/env/caddy.env
 install -m 0600 /tmp/postgres.env.example /opt/soulcuts/env/postgres.env
 install -m 0600 /tmp/backend.env.example /opt/soulcuts/env/backend.env
 install -m 0600 /tmp/public-site.env.example /opt/soulcuts/env/public-site.env
+install -m 0600 /tmp/blog.env.example /opt/soulcuts/env/blog.env
 install -m 0600 /tmp/admin-app.env.example /opt/soulcuts/env/admin-app.env
 rm /tmp/*.env.example
 ```
@@ -252,6 +258,7 @@ Edit `versions/production.env`:
 
 ```env
 PUBLIC_SITE_IMAGE=ghcr.io/mharnichev/sc-fe/public-site:<new-tag>
+BLOG_IMAGE=ghcr.io/mharnichev/sc-fe/blog:<new-tag>
 ADMIN_APP_IMAGE=ghcr.io/mharnichev/sc-fe/admin:<new-tag>
 BACKEND_IMAGE=ghcr.io/mharnichev/sc-be/api:<new-tag>
 ```
@@ -308,6 +315,7 @@ Recommended Dockerfile replacements:
 
 ```text
 examples/frontend/Dockerfile.public-site -> sc-fe/apps/barbershop/Dockerfile
+examples/frontend/Dockerfile.blog -> sc-fe/apps/blog/Dockerfile
 examples/frontend/Dockerfile.admin-app -> sc-fe/apps/backoffice/Dockerfile
 examples/frontend/.dockerignore -> sc-fe/.dockerignore
 ```
@@ -315,12 +323,20 @@ examples/frontend/.dockerignore -> sc-fe/.dockerignore
 The workflow builds:
 
 - `ghcr.io/mharnichev/sc-fe/public-site:<sha>`
+- `ghcr.io/mharnichev/sc-fe/blog:<sha>`
 - `ghcr.io/mharnichev/sc-fe/admin:<sha>`
 
-Both apps should use:
+All frontend apps should use:
 
 ```env
 NUXT_PUBLIC_API_BASE=https://api.soulcuts.com.ua/api/v1
+```
+
+The blog app must also be built with:
+
+```env
+NUXT_APP_BASE_URL=/blog/
+NUXT_PUBLIC_BLOG_SITE_URL=https://soulcuts.com.ua/blog
 ```
 
 ## Backend Repo Setup
