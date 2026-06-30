@@ -51,6 +51,8 @@ jobs:
           rsync -az --delete \
             -e "ssh -p ${PORT:-22}" \
             --exclude ".git" \
+            --exclude "graphify-out" \
+            --exclude "*/graphify-out" \
             ./ "$USER@$HOST:/opt/soulcuts/releases/$release_id/"
 
       - name: Login to GHCR on server

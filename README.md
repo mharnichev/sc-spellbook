@@ -252,6 +252,42 @@ Frontend/backend repos do not deploy production directly.
 
 This keeps production deployment controlled by the infra repo.
 
+## Graphify Context Graphs
+
+Graphify is installed locally through `uv tool install 'graphifyy[all]'`. The CLI binary is available at `/Users/markgarnicev/.local/bin/graphify`.
+
+The project-scoped Codex skill is installed in `sc-fe`, `sc-be`, and this repo under `.codex/skills/graphify/`. Each repo also has `AGENTS.md` instructions telling Codex to query the graph before broad source searches.
+
+Update all local graphs after releases or broad cross-repo changes:
+
+```bash
+/Users/markgarnicev/sc/sc-spellbook/scripts/graphify-sync.sh release
+```
+
+Use the same script for normal local refreshes:
+
+```bash
+/Users/markgarnicev/sc/sc-spellbook/scripts/graphify-sync.sh auto
+/Users/markgarnicev/sc/sc-spellbook/scripts/graphify-sync.sh update
+/Users/markgarnicev/sc/sc-spellbook/scripts/graphify-sync.sh status
+```
+
+Run `auto` once on a machine to install project-scoped Codex Graphify config and local git hooks for `sc-fe`, `sc-be`, and `sc-spellbook`. The hooks rebuild the code graph in the background after commits and branch checkouts. Hook output is written to `~/.cache/graphify-rebuild.log`.
+
+Open these folders as Obsidian vaults:
+
+- `/Users/markgarnicev/sc/sc-fe/graphify-out/obsidian/`
+- `/Users/markgarnicev/sc/sc-be/graphify-out/obsidian/`
+- `/Users/markgarnicev/sc/sc-spellbook/graphify-out/obsidian/`
+
+During development, use focused graph queries before wide source searches:
+
+```bash
+graphify query "booking flow" --graph /Users/markgarnicev/sc/sc-be/graphify-out/graph.json
+graphify query "public booking form" --graph /Users/markgarnicev/sc/sc-fe/graphify-out/graph.json
+graphify explain "Booking" --graph /Users/markgarnicev/sc/sc-be/graphify-out/graph.json
+```
+
 ## Updating Versions Manually
 
 Edit `versions/production.env`:
