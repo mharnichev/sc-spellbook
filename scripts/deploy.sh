@@ -83,6 +83,15 @@ cd "${ROOT_DIR}"
 echo "Validating Compose configuration..."
 compose config -q
 
+if [[ -n "${PREVIOUS_RELEASE}" && -f "${PREVIOUS_RELEASE}/versions/production.env" ]]; then
+  previous_backend_image="$(sed -n 's/^BACKEND_IMAGE=//p' "${PREVIOUS_RELEASE}/versions/production.env" | tail -n 1)"
+  next_backend_image="$(sed -n 's/^BACKEND_IMAGE=//p' "${ENV_FILE}" | tail -n 1)"
+  if [[ -n "${previous_backend_image}" && "${previous_backend_image}" != "${next_backend_image}" ]]; then
+    echo "Backend image changed. Creating a database backup before migrations..."
+    bash "${ROOT_DIR}/scripts/backup-db.sh"
+  fi
+fi
+
 echo "Pulling images..."
 compose pull
 
