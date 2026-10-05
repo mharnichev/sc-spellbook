@@ -98,6 +98,9 @@ services:
       POSTGRES_PORT: "5432"
       UPLOAD_DIR: /app/data/uploads
       CORS_ORIGINS: https://soulcuts.com.ua,https://www.soulcuts.com.ua,https://admin.soulcuts.com.ua
+      CAMPAIGN_RUN_SCHEDULER_ENABLED: "true"
+      CAMPAIGN_RUN_SCHEDULER_INTERVAL_SECONDS: "30"
+      SMS_QUEUE_WORKER_ENABLED: "true"
     command: >
       sh -c "alembic upgrade head &&
       uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers $${API_WORKERS:-2}"
