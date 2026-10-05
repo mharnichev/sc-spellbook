@@ -15,9 +15,9 @@
 soulcuts.com.ua, www.soulcuts.com.ua {
 	import security_headers
 	@private_booking path /booking /booking/*
-	header @private_booking Referrer-Policy "no-referrer"
+	header @private_booking >Referrer-Policy "no-referrer"
 	@public_referrer not path /booking /booking/*
-	header @public_referrer Referrer-Policy "strict-origin-when-cross-origin"
+	header @public_referrer >Referrer-Policy "strict-origin-when-cross-origin"
 	encode zstd gzip
 
 	redir /blog /blog/ 308
@@ -30,14 +30,14 @@ soulcuts.com.ua, www.soulcuts.com.ua {
 
 admin.soulcuts.com.ua {
 	import security_headers
-	header Referrer-Policy "strict-origin-when-cross-origin"
+	header >Referrer-Policy "strict-origin-when-cross-origin"
 	encode zstd gzip
 	reverse_proxy admin-app:3000
 }
 
 api.soulcuts.com.ua {
 	import security_headers
-	header Referrer-Policy "strict-origin-when-cross-origin"
+	header >Referrer-Policy "strict-origin-when-cross-origin"
 	encode zstd gzip
 	reverse_proxy backend:8000
 }
