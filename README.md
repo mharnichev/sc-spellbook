@@ -321,6 +321,30 @@ Rollback changes running containers back to an older image set. It does not down
 
 ## Database Backup And Restore
 
+Backend image changes automatically create both a database dump and a file archive
+before deployment. Files are archived from `/opt/soulcuts/data/uploads` and, when
+present, `/opt/soulcuts/data/imports` by `bash scripts/backup-files.sh`. Archives
+are private and stored in `/opt/soulcuts/backups`; this is not an off-server backup
+or a scheduled backup policy. Application uploads use the host bind mount;
+`data/imports` is not mounted into the backend container.
+
+Test database restoration in an isolated PostgreSQL instance before relying on a
+dump. `pg_restore --list` alone does not verify all archived data. Production
+restore validates the archive, stops the running API and reminder writers, and
+resumes only those services after a successful transactional restore. On failure,
+writers remain stopped until an operator verifies the database. Image rollback
+does not undo schema migrations. Never restore a file archive over live uploads
+without a separate, verified recovery plan.
+
+Backend releases stop API/reminder writers before backups and migration startup.
+If backend replacement fails, `backend-recovery-required` in `/opt/soulcuts`
+blocks later deployments as well. Inspect the applied schema and recover with a
+compatible release before an operator removes this marker; do not remove it just
+to retry a failed deployment.
+If backend replacement fails, deployment leaves these writers stopped rather
+than automatically starting an older backend against a potentially newer schema.
+Inspect the database version and recovery options before restarting services.
+
 Backup:
 
 ```bash
