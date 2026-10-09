@@ -18,20 +18,34 @@ fi
 
 cd "${ROOT_DIR}"
 
-start_backend() {
-  docker compose --project-name "${PROJECT_NAME}" --env-file versions/production.env -f docker-compose.prod.yml up -d backend || true
+compose() {
+  docker compose --project-name "${PROJECT_NAME}" --env-file versions/production.env -f docker-compose.prod.yml "$@"
 }
 
-docker compose --project-name "${PROJECT_NAME}" --env-file versions/production.env -f docker-compose.prod.yml stop backend
-trap start_backend EXIT
+# Reject malformed archives before stopping writers or changing the database.
+compose exec -T postgres pg_restore --list < "${BACKUP_FILE}" >/dev/null
+writers=()
+running_services="$(compose ps --status running --services)"
+while IFS= read -r service; do
+  case "${service}" in
+    backend|booking-sms-reminders) writers+=("${service}") ;;
+  esac
+done <<< "${running_services}"
 
-docker compose --project-name "${PROJECT_NAME}" --env-file versions/production.env -f docker-compose.prod.yml exec -T postgres \
+if (( ${#writers[@]} )); then
+  compose stop "${writers[@]}"
+fi
+trap 'echo "Restore failed. Database writers remain stopped; investigate before restarting." >&2' ERR
+
+compose exec -T postgres \
   sh -c 'dropdb --if-exists --force -U "$POSTGRES_USER" "$POSTGRES_DB" && createdb -U "$POSTGRES_USER" "$POSTGRES_DB"'
 
-docker compose --project-name "${PROJECT_NAME}" --env-file versions/production.env -f docker-compose.prod.yml exec -T postgres \
-  sh -c 'pg_restore --clean --if-exists -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < "${BACKUP_FILE}"
+compose exec -T postgres \
+  sh -c 'pg_restore --exit-on-error --single-transaction -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < "${BACKUP_FILE}"
 
-trap - EXIT
-docker compose --project-name "${PROJECT_NAME}" --env-file versions/production.env -f docker-compose.prod.yml up -d backend
+trap - ERR
+if (( ${#writers[@]} )); then
+  compose start "${writers[@]}"
+fi
 
 echo "Database restored from ${BACKUP_FILE}"

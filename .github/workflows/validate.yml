@@ -20,6 +20,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Validate backup and deployment safeguards
+        run: |
+          bash -n scripts/deploy.sh scripts/restore-db.sh scripts/backup-files.sh
+          python3 -B -m unittest discover -s tests -v
+
       - name: Validate Docker Compose
         run: docker compose --env-file versions/production.env -f docker-compose.prod.yml config -q
 
