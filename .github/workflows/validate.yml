@@ -30,8 +30,18 @@ jobs:
 
       - name: Validate Caddyfile
         run: |
-          docker run --rm \
+          digest=sha256:af32e97399febea808609119bb21544d0265c58a02836576e32a2d082c262c17
+          image=""
+          for registry in public.ecr.aws/docker/library docker.io/library; do
+            candidate="$registry/caddy:2.8-alpine@$digest"
+            if docker pull "$candidate"; then
+              image="$candidate"
+              break
+            fi
+          done
+          test -n "$image"
+          docker run --rm --pull=never \
             -e ACME_EMAIL=admin@soulcuts.com.ua \
             -v "$PWD/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" \
-            public.ecr.aws/docker/library/caddy:2.8-alpine@sha256:af32e97399febea808609119bb21544d0265c58a02836576e32a2d082c262c17 \
+            "$image" \
             caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
