@@ -442,3 +442,17 @@ Restart one service:
 ```bash
 docker compose --project-name soulcuts --env-file versions/production.env -f docker-compose.prod.yml up -d backend
 ```
+
+## Public SEO checks
+
+Run the read-only release/monitoring probe after deploying the public apps:
+
+```bash
+python3 -B scripts/check-public-seo.py
+```
+
+The production workflow runs this probe after deployment. It checks permanent canonical redirects with the path and query preserved, both sitemap declarations in robots.txt, XML responses, canonical origins, unique URLs and private-route exclusion. Exit 1 means a broken check; exit 2 means the barbershop sitemap is serving its last-known-good snapshot after an upstream failure. A failing probe marks the workflow failed and does not roll the release back. Scheduling and alert delivery are configured separately; this command does not install a scheduled job.
+
+The blog owns `/blog/sitemap.xml` and the barbershop owns `robots.txt` and `/sitemap.xml`. A release introducing the blog sitemap declaration must build and pin **both** `BLOG_IMAGE` and `PUBLIC_SITE_IMAGE` before deploying the infra change. Updating only the barbershop image leaves the advertised blog sitemap unavailable. Validate the blog with its production base URL (`NUXT_APP_BASE_URL=/blog/`, `NUXT_PUBLIC_BLOG_SITE_URL=https://soulcuts.com.ua/blog`).
+
+The barbershop sitemap shares refreshes within each server process, limits upstream requests to 5 seconds, caches successful XML for 15 minutes and allows a fallback for at most 24 hours since the last successful refresh. The snapshot is held in process memory and is lost on restart; a cold or expired upstream failure returns 502 rather than an incomplete sitemap. Check `X-Sitemap-Freshness`, `X-Sitemap-Age-Seconds` and `X-Sitemap-Last-Success` when diagnosing an alert.
