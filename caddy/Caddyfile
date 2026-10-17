@@ -13,8 +13,20 @@
 }
 
 www.soulcuts.com.ua {
-	import security_headers
-	redir https://soulcuts.com.ua{uri} 308
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		-Server
+	}
+	handle /support-widget {
+		reverse_proxy public-site:3000 {
+			header_down -X-Frame-Options
+		}
+	}
+	handle {
+		header X-Frame-Options "DENY"
+		redir https://soulcuts.com.ua{uri} 308
+	}
 }
 
 soulcuts.com.ua {
@@ -22,6 +34,7 @@ soulcuts.com.ua {
 	encode zstd gzip
 
 	header /robots.txt >Cache-Control "no-store"
+	respond /support-widget 404
 
 	redir /blog /blog/ 308
 
