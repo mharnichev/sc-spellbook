@@ -21,6 +21,8 @@ soulcuts.com.ua {
 	import security_headers
 	encode zstd gzip
 
+	header /robots.txt >Cache-Control "no-store"
+
 	redir /blog /blog/ 308
 
 	@blog path /blog/*
