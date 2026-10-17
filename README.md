@@ -445,6 +445,13 @@ docker compose --project-name soulcuts --env-file versions/production.env -f doc
 
 ## Public SEO checks
 
+Dobrodesk support is isolated at `https://www.soulcuts.com.ua/support-widget`.
+Only this exact www path bypasses the canonical redirect; the apex path returns
+404. The document is noindex/no-store and may be framed only by the public site.
+The public site's sandboxed iframe accepts presentation commands only and loads
+after an explicit support click. Never move the provider loader into the host
+document or point `NUXT_PUBLIC_DOBRODESK_FRAME_URL` at the site's own origin.
+
 Run the read-only release/monitoring probe after deploying the public apps:
 
 ```bash
