@@ -44,7 +44,7 @@ class PublicSeoTests(unittest.TestCase):
                 if '?seo_probe=1' in url:
                     return 308, {'location': origin + '/services?seo_probe=1'}, b''
                 if url.endswith('/robots.txt'):
-                    return 200, {}, ('Sitemap: ' + origin + '/sitemap.xml\nSitemap: ' + origin + '/blog/sitemap.xml\n').encode()
+                    return 200, {'cache-control': 'no-store'}, ('Sitemap: ' + origin + '/sitemap.xml\nSitemap: ' + origin + '/blog/sitemap.xml\n').encode()
                 blog = url.endswith('/blog/sitemap.xml')
                 return 200, {'content-type': 'application/xml', 'x-sitemap-freshness': 'fresh' if blog else freshness}, sitemap(origin + ('/blog/posts/story' if blog else '/services')).encode()
             output = StringIO()
@@ -62,4 +62,14 @@ class PublicSeoTests(unittest.TestCase):
     def test_probe_rejects_redirect_that_loses_query(self):
         with patch.object(seo, 'request', return_value=(308, {'location': 'https://soulcuts.com.ua/services'}, b'')), patch('sys.argv', ['probe']):
             with self.assertRaisesRegex(ValueError, 'Canonical redirect failed'):
+                seo.main()
+
+    def test_probe_rejects_cached_robots_even_when_its_body_is_current(self):
+        origin = 'https://soulcuts.com.ua'
+        def fake_request(url):
+            if '?seo_probe=1' in url:
+                return 308, {'location': origin + '/services?seo_probe=1'}, b''
+            return 200, {'cache-control': 'max-age=14400'}, ('Sitemap: ' + origin + '/sitemap.xml\nSitemap: ' + origin + '/blog/sitemap.xml\n').encode()
+        with patch.object(seo, 'request', fake_request), patch('sys.argv', ['probe']):
+            with self.assertRaisesRegex(ValueError, 'disable CDN storage'):
                 seo.main()

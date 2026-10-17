@@ -69,11 +69,14 @@ def main():
         if status not in (301, 308) or headers.get('location') != target:
             raise ValueError(f'Canonical redirect failed: {source} (HTTP {status})')
         checks.append({'check': 'canonical_redirect', 'origin': source, 'status': status})
-    status, _, robots = request(origin + '/robots.txt')
+    status, robots_headers, robots = request(origin + '/robots.txt')
     expected_maps = [origin + '/sitemap.xml', origin + '/blog/sitemap.xml']
     lines = robots.decode('utf-8').splitlines()
     if status != 200 or any('Sitemap: ' + value not in lines for value in expected_maps):
         raise ValueError('robots.txt does not advertise both sitemaps')
+    cache_directives = {part.strip().lower() for part in robots_headers.get('cache-control', '').split(',')}
+    if 'no-store' not in cache_directives:
+        raise ValueError('robots.txt must disable CDN storage after a release')
     checks.append({'check': 'robots', 'status': status})
     for index, sitemap in enumerate(expected_maps):
         status, headers, body = request(sitemap)
