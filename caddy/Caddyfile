@@ -12,7 +12,12 @@
 	}
 }
 
-soulcuts.com.ua, www.soulcuts.com.ua {
+www.soulcuts.com.ua {
+	import security_headers
+	redir https://soulcuts.com.ua{uri} 308
+}
+
+soulcuts.com.ua {
 	import security_headers
 	encode zstd gzip
 
