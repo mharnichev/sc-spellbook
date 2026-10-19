@@ -88,6 +88,14 @@ soulcuts.com.ua {
 admin.soulcuts.com.ua {
 	import security_headers
 	encode zstd gzip
+	@product_media {
+		method GET HEAD
+		path /media/products/*
+	}
+	handle @product_media {
+		header >Content-Security-Policy "sandbox; default-src 'none'; frame-ancestors 'none'"
+		import direct_api
+	}
 	@browser_api path /api/v1 /api/v1/*
 	handle @browser_api {
 		import direct_api
