@@ -28,6 +28,27 @@ class OwnerTests(unittest.TestCase):
 
 
 class NetworkTests(unittest.TestCase):
+    def test_builtin_networks_allow_null_ipam_and_config(self):
+        ingress.validate([], [
+            {'Name': 'host', 'IPAM': {'Config': None}, 'Options': None},
+            {'Name': 'none', 'IPAM': None},
+        ], 'soulcuts_api_ingress')
+
+    def test_null_builtin_config_does_not_hide_an_overlapping_bridge(self):
+        with self.assertRaisesRegex(ValueError, 'another Docker network'):
+            ingress.validate([], [
+                {'Name': 'host', 'IPAM': {'Config': None}},
+                {'Name': 'other', 'IPAM': {'Config': [{'Subnet': '172.30.41.0/24'}]}},
+            ], 'soulcuts_api_ingress')
+
+    def test_expected_ingress_null_config_fails_but_null_options_use_bridge_id(self):
+        network = {'Name': 'soulcuts_api_ingress', 'IPAM': {'Config': None}, 'Internal': True,
+                   'Id': '123456789abc000', 'Options': None}
+        with self.assertRaises(ValueError):
+            ingress.validate([], [network], network['Name'])
+        network['IPAM']['Config'] = [{'Subnet': '172.30.41.0/29'}]
+        ingress.validate([{'dst': '172.30.41.0/29', 'dev': 'br-123456789abc'}], [network], network['Name'])
+
     def test_supplied_host_routes_do_not_overlap(self):
         ingress.validate([{'dst': 'default'}, {'dst': '172.17.0.0/16'}, {'dst': '172.18.0.0/16'},
                           {'dst': '172.31.1.1/32'}], [], 'soulcuts_api_ingress')

@@ -13,10 +13,10 @@ def validate(routes, networks, expected_name):
     bridge = None
     if existing:
         network = existing[0]
-        ranges = [c.get('Subnet') for c in network.get('IPAM', {}).get('Config', [])]
+        ranges = [c.get('Subnet') for c in ((network.get('IPAM') or {}).get('Config') or [])]
         if ranges != [str(SUBNET)] or not network.get('Internal'):
             raise ValueError('Existing ingress network does not match the release boundary')
-        bridge = network.get('Options', {}).get('com.docker.network.bridge.name') or 'br-' + network['Id'][:12]
+        bridge = (network.get('Options') or {}).get('com.docker.network.bridge.name') or 'br-' + network['Id'][:12]
     for route in routes:
         destination = route.get('dst', 'default')
         if destination == 'default':
@@ -27,7 +27,7 @@ def validate(routes, networks, expected_name):
                 continue
             raise ValueError('Ingress subnet overlaps a host route')
     for network in networks:
-        for config in network.get('IPAM', {}).get('Config', []):
+        for config in ((network.get('IPAM') or {}).get('Config') or []):
             if not config.get('Subnet'):
                 continue
             candidate = ipaddress.ip_network(config['Subnet'])

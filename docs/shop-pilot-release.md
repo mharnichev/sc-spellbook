@@ -187,6 +187,11 @@ source; unrelated local barbershop/blog edits were not imported.
 - FE: 141 Shop and 298 backoffice tests, both builds/typechecks and read-only
   desktop/mobile fixture smoke passed. No real provider acceptance is implied.
 - Infra: 75 tests passed with `RUN_CADDY_INTEGRATION=1`, no skips.
+  A first workflow attempt stopped before writer shutdown, backup or migration:
+  Docker built-in host/none networks returned `IPAM.Config=null`. The narrow
+  follow-up handles nullable IPAM/config/options, retains collision rejection,
+  and passed 78 full tests plus the actual read-only server network preflight.
+  No recovery marker was created and existing production containers kept running.
 - Actual production-derived private copy: `/opt/soulcuts/backups/shop-rehearsal-51ed8620678149a19ad8ffa91144dc80`.
   Upgrade 0110 -> 0129 preserved rows in all 81 original public tables other than
   the Alembic version table, comparing their original columns, and all existing
