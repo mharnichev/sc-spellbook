@@ -133,6 +133,15 @@ class ComposeTests(unittest.TestCase):
                           ('postgres', 'POSTGRES_IMAGE')]:
             self.assertEqual(services[name]['image'], pins[key])
 
+    def test_blog_canonical_url_uses_the_actual_nuxt_runtime_key(self):
+        services = self.config['services']
+        blog = services['blog']['environment']
+        self.assertEqual(blog['NUXT_APP_BASE_URL'], '/blog/')
+        self.assertEqual(blog['NUXT_PUBLIC_BLOG_SITE_URL'], 'https://soulcuts.com.ua/blog')
+        self.assertEqual(blog['NUXT_PUBLIC_SITE_URL'], 'https://soulcuts.com.ua/blog')
+        self.assertNotEqual(services['public-site']['environment'].get('NUXT_PUBLIC_SITE_URL'),
+                            'https://soulcuts.com.ua/blog')
+
     def test_local_engine_defaults_preserve_existing_tags(self):
         env = {key: value for key, value in self.env.items() if key not in {'CADDY_IMAGE', 'POSTGRES_IMAGE'}}
         # Use an empty interpolation file so future production pins do not alter

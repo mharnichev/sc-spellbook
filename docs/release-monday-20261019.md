@@ -36,8 +36,8 @@ successful. Artifact-only contexts contain no source tree or host node_modules.
 Blog runtime retains all three existing base URL/site/API environment defaults.
 
 Read-only independent artifact inspection found no native executable formats,
-native extension files or symlinks. Target images must also pass offline amd64
-startup, SSR, deep-link, asset-prefix and copied-file manifest checks.
+native extension files or symlinks. Target images passed offline amd64 startup,
+SSR, deep-link, asset-prefix and copied-file manifest checks.
 
 Frozen output manifest SHA-256 (sorted relative paths plus content hashes):
 
@@ -61,3 +61,25 @@ after normal authenticated/verified login. Financial, mock and shipment
 transport flags remain unchanged. After rollout verify all eight image IDs,
 the sole owner and expected scheduler set, the separate reminder process,
 queue state and public SEO before accepting the exact release directory.
+
+## Live acceptance and runtime correction
+
+Release `20261019T124136Z-4fe5e42` reached the expected pending-acceptance gate.
+The first complete SEO check found Blog sitemap HTTP 500: the native artifact
+had the root site URL baked in. `NUXT_PUBLIC_BLOG_SITE_URL` is a Nuxt-config
+build-time alias, while `runtimeConfig.public.siteUrl` requires the runtime key
+`NUXT_PUBLIC_SITE_URL`. Initial home/deep-link/asset checks missed this sitemap
+case; the offline image test was extended to request and validate the sitemap.
+
+Under the release mutex, only Blog's private env received
+`NUXT_PUBLIC_SITE_URL=https://soulcuts.com.ua/blog`, with an atomic write and
+private backup. Only Blog was recreated from the exact pending release/pin;
+the recovery marker was not changed or bypassed. This follow-up makes the same
+runtime key explicit in Blog's Compose environment and adds a regression test.
+
+After correction: both sitemaps and canonical redirects passed; all eight
+image IDs matched; owner13 and reminder utility were healthy; schema remained
+0129 and queue aggregates were unchanged. The paired backup at
+`/opt/soulcuts/backups/pilot-BgeFUaZ1` passed private-permission, size and SHA-256
+verification. Normal explicit acceptance completed for that exact release.
+The follow-up has identical image pins and must use the frontend-only path.
