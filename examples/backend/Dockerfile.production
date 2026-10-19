@@ -17,10 +17,8 @@ RUN pip install --no-cache-dir --upgrade pip \
 COPY alembic ./alembic
 COPY alembic.ini ./
 COPY app ./app
-COPY scripts/start-production.sh ./scripts/start-production.sh
-
-RUN chmod +x ./scripts/start-production.sh
+COPY scripts/start.sh ./scripts/start.sh
 
 EXPOSE 8000
-CMD ["./scripts/start-production.sh"]
+CMD ["sh", "/app/scripts/start.sh"]
 

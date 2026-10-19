@@ -2,7 +2,7 @@ name: soulcuts
 
 services:
   caddy:
-    image: caddy:2.8-alpine
+    image: ${CADDY_IMAGE:-caddy:2.8-alpine}
     restart: unless-stopped
     env_file:
       - ${CADDY_ENV_FILE:-/opt/soulcuts/env/caddy.env}
@@ -14,12 +14,18 @@ services:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+    networks:
+      default: {}
+      api_ingress:
+        ipv4_address: 172.30.41.2
     depends_on:
       public-site:
         condition: service_started
       blog:
         condition: service_started
       admin-app:
+        condition: service_started
+      shop:
         condition: service_started
       backend:
         condition: service_healthy
@@ -76,6 +82,7 @@ services:
       NITRO_HOST: 0.0.0.0
       NITRO_PORT: "3000"
       NODE_ENV: production
+      NUXT_PUBLIC_API_BASE: /api/v1
     expose:
       - "3000"
     healthcheck:
@@ -85,9 +92,32 @@ services:
       retries: 5
       start_period: 30s
 
+  shop:
+    image: ${SHOP_IMAGE:?SHOP_IMAGE must be supplied after candidate acceptance}
+    restart: unless-stopped
+    env_file:
+      - ${SHOP_ENV_FILE:-/opt/soulcuts/env/shop.env}
+    environment:
+      NODE_ENV: production
+      NITRO_HOST: 0.0.0.0
+      NITRO_PORT: "3000"
+      NUXT_APP_BASE_URL: /shop/
+      NUXT_API_BASE: http://backend:8000/api/v1
+      NUXT_PUBLIC_API_BASE: /api/v1
+      NUXT_PUBLIC_DOBRODESK_ENABLED: "false"
+    expose:
+      - "3000"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/shop/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
   backend:
     image: ${BACKEND_IMAGE:?BACKEND_IMAGE is required}
     restart: unless-stopped
+    stop_grace_period: 90s
     env_file:
       - ${POSTGRES_ENV_FILE:-/opt/soulcuts/env/postgres.env}
       - ${BACKEND_ENV_FILE:-/opt/soulcuts/env/backend.env}
@@ -101,9 +131,39 @@ services:
       CAMPAIGN_RUN_SCHEDULER_ENABLED: "true"
       CAMPAIGN_RUN_SCHEDULER_INTERVAL_SECONDS: "30"
       SMS_QUEUE_WORKER_ENABLED: "true"
-    command: >
-      sh -c "alembic upgrade head &&
-      uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers $${API_WORKERS:-2}"
+      API_WORKERS: "1"
+      MIGRATIONS_MODE: check
+      BACKGROUND_WORKERS_ENABLED: "true"
+      BACKGROUND_OWNER_HEARTBEAT_SECONDS: "5"
+      CUSTOMER_ACTIVITY_NOTIFICATION_SCHEDULER_ENABLED: "true"
+      TRUSTED_PROXY_IPS: 172.30.41.2
+      SHOP_CHECKOUT_ENABLED: "false"
+      SHOP_ORDER_OPERATIONS_ENABLED: "false"
+      SHOP_FISCAL_MOCK_ENABLED: "false"
+      SHOP_CARRIER_RETURNS_MOCK_ENABLED: "false"
+      SHOP_CHECKBOX_ENABLED: "false"
+      SHOP_CHECKBOX_LIVE_TRANSPORT_ENABLED: "false"
+      SHOP_PAYMENTS_ENABLED: "false"
+      SHOP_MONOBANK_LIVE_TRANSPORT_ENABLED: "false"
+      SHOP_NP_RETURNS_ENABLED: "false"
+      SHOP_NP_RETURN_LIVE_TRANSPORT_ENABLED: "false"
+      SHOP_PAYMENT_RESOLUTIONS_ENABLED: "false"
+      PROVIDER_SANDBOX_ENABLED: "false"
+      SANDBOX_PROVIDER_NETWORK_ENABLED: "false"
+      MONOBANK_QR_MOCK_ENABLED: "false"
+      CHECKBOX_ETTN_MOCK_ENABLED: "false"
+      CHECKBOX_MOCK_ENABLED: "false"
+      NP_MOCK_SHIPMENTS_ENABLED: "false"
+      LOCAL_SALES_SIMULATION_ENABLED: "false"
+      NP_TRACKING_ENABLED: "false"
+    entrypoint: []
+    command: ["sh", "/app/scripts/start.sh"]
+    networks:
+      default: {}
+      api_ingress:
+        ipv4_address: 172.30.41.3
+        aliases:
+          - api-ingress-backend
     expose:
       - "8000"
     volumes:
@@ -121,6 +181,7 @@ services:
   booking-sms-reminders:
     image: ${BACKEND_IMAGE:?BACKEND_IMAGE is required}
     restart: unless-stopped
+    stop_grace_period: 90s
     env_file:
       - ${POSTGRES_ENV_FILE:-/opt/soulcuts/env/postgres.env}
       - ${BACKEND_ENV_FILE:-/opt/soulcuts/env/backend.env}
@@ -129,19 +190,50 @@ services:
       DEBUG: "false"
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
+      CORS_ORIGINS: https://soulcuts.com.ua,https://www.soulcuts.com.ua,https://admin.soulcuts.com.ua
     command: >
-      sh -c "while true; do
-      python -m app.utils.send_booking_sms_reminders || true;
-      sleep $${BOOKING_SMS_REMINDER_INTERVAL_SECONDS:-300};
-      done"
+      sh -c 'stopping=false;
+      trap "stopping=true" TERM INT;
+      while [ "$$stopping" = false ]; do
+      python -m app.utils.send_booking_sms_reminders & child=$$!;
+      wait "$$child" || true;
+      if [ "$$stopping" = true ]; then wait "$$child" || true; exit 0; fi;
+      sleep $${BOOKING_SMS_REMINDER_INTERVAL_SECONDS:-300} & child=$$!;
+      wait "$$child" || true;
+      done'
+    entrypoint: []
     depends_on:
       backend:
         condition: service_healthy
       postgres:
         condition: service_healthy
 
+  migrate:
+    profiles: [release]
+    image: ${BACKEND_IMAGE:?BACKEND_IMAGE is required}
+    restart: "no"
+    entrypoint: []
+    command: ["alembic", "upgrade", "head"]
+    env_file:
+      - ${POSTGRES_ENV_FILE:-/opt/soulcuts/env/postgres.env}
+      - ${BACKEND_ENV_FILE:-/opt/soulcuts/env/backend.env}
+    environment:
+      APP_ENV: production
+      DEBUG: "false"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      CORS_ORIGINS: https://soulcuts.com.ua,https://www.soulcuts.com.ua,https://admin.soulcuts.com.ua
+      MIGRATIONS_MODE: check
+      BACKGROUND_WORKERS_ENABLED: "false"
+      PGCONNECT_TIMEOUT: "5"
+      PGOPTIONS: "-c lock_timeout=5000 -c statement_timeout=300000"
+    networks: [default]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   postgres:
-    image: postgres:16-alpine
+    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
     restart: unless-stopped
     env_file:
       - ${POSTGRES_ENV_FILE:-/opt/soulcuts/env/postgres.env}
@@ -153,6 +245,13 @@ services:
       timeout: 5s
       retries: 10
       start_period: 10s
+
+networks:
+  api_ingress:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.41.0/29
 
 volumes:
   caddy_data:

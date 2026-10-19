@@ -16,6 +16,9 @@ if [[ -z "${BACKUP_FILE}" || ! -f "${BACKUP_FILE}" ]]; then
   exit 1
 fi
 
+source "${ROOT_DIR}/scripts/release-lock.sh"
+acquire_release_lock
+
 cd "${ROOT_DIR}"
 
 compose() {
@@ -33,7 +36,7 @@ while IFS= read -r service; do
 done <<< "${running_services}"
 
 if (( ${#writers[@]} )); then
-  compose stop "${writers[@]}"
+  compose stop --timeout 90 "${writers[@]}"
 fi
 trap 'echo "Restore failed. Database writers remain stopped; investigate before restarting." >&2' ERR
 
