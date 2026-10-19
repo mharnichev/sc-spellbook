@@ -21,6 +21,7 @@ jobs:
       PUBLIC_SITE_ENV_FILE: env/public-site.env.example
       BLOG_ENV_FILE: env/blog.env.example
       ADMIN_APP_ENV_FILE: env/admin-app.env.example
+      SHOP_ENV_FILE: env/shop.env.example
     steps:
       - name: Checkout
         uses: actions/checkout@v4

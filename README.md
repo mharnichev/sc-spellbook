@@ -2,6 +2,11 @@
 
 Production infrastructure for the Soulcuts project on a single Hetzner VPS.
 
+Closed Shop pilot changes are **not deploy-approved**. Follow
+[the pilot release/acceptance runbook](docs/shop-pilot-release.md): required Shop
+image pin is intentionally absent, migrations are isolated, and successful startup
+leaves a manual acceptance marker. No public checkout is enabled.
+
 This repo intentionally keeps the first deployment stage simple:
 
 - Docker Compose runs production services on one VPS.
@@ -308,21 +313,21 @@ SSH to the server:
 ```bash
 ssh deploy@<server-ip>
 cd /opt/soulcuts/current
-./scripts/rollback.sh
+./scripts/rollback.sh /opt/soulcuts/releases/<explicit-frontend-target>
 ```
 
-By default rollback selects the previous release directory. To rollback to a specific release:
-
-```bash
-./scripts/rollback.sh /opt/soulcuts/releases/20260523-120000-abc1234
-```
-
-Rollback changes running containers back to an older image set. It does not downgrade database migrations. For risky backend releases, take a database backup first.
+For this pilot, `rollback.sh <explicit-target>` permits only frontend rollback
+with an identical backend pin and passing read-only schema/owner/health gates.
+Backend-changing rollback requires an operator-reviewed recovery procedure.
+Do not run older release scripts to bypass the recovery marker or lock.
 
 ## Database Backup And Restore
 
-Backend image changes automatically create both a database dump and a file archive
-before deployment. Files are archived from `/opt/soulcuts/data/uploads` and, when
+Every backend-changing pilot deployment creates a database dump and file archive after
+stopping both writers. Unchanged-backend frontend releases leave writers running,
+do not migrate/back up/create a critical marker, and complete normally after health
+and owner verification. Files are archived
+from `/opt/soulcuts/data/uploads` and, when
 present, `/opt/soulcuts/data/imports` by `bash scripts/backup-files.sh`. Archives
 are private and stored in `/opt/soulcuts/backups`; this is not an off-server backup
 or a scheduled backup policy. Application uploads use the host bind mount;
@@ -344,6 +349,9 @@ to retry a failed deployment.
 If backend replacement fails, deployment leaves these writers stopped rather
 than automatically starting an older backend against a potentially newer schema.
 Inspect the database version and recovery options before restarting services.
+For backend changes, after healthy startup and owner checks, deploy exits 3 with writers running and
+the marker retained for primary manual acceptance; do not automatically retry.
+Only `accept-shop-pilot.sh` clears that marker after the documented explicit gate.
 
 Backup:
 
@@ -411,7 +419,7 @@ Recommended Dockerfile replacement:
 
 ```text
 examples/backend/Dockerfile.production -> sc-be/Dockerfile
-examples/backend/start-production.sh -> sc-be/scripts/start-production.sh
+examples/backend/start.sh -> sc-be/scripts/start.sh
 examples/backend/.dockerignore -> sc-be/.dockerignore
 ```
 

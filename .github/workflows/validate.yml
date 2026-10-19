@@ -16,13 +16,16 @@ jobs:
       PUBLIC_SITE_ENV_FILE: env/public-site.env.example
       BLOG_ENV_FILE: env/blog.env.example
       ADMIN_APP_ENV_FILE: env/admin-app.env.example
+      SHOP_ENV_FILE: env/shop.env.example
+      SHOP_IMAGE: local/shop:validation-only
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Validate backup and deployment safeguards
         run: |
-          bash -n scripts/deploy.sh scripts/restore-db.sh scripts/backup-files.sh
+          bash -n scripts/deploy.sh scripts/restore-db.sh scripts/backup-db.sh scripts/backup-files.sh scripts/release-lock.sh scripts/verify-background-owner.sh scripts/accept-shop-pilot.sh scripts/rollback.sh
+          sh -n examples/backend/start.sh examples/backend/start-production.sh
           python3 -B -m unittest discover -s tests -v
 
       - name: Validate Docker Compose
@@ -45,3 +48,4 @@ jobs:
             -v "$PWD/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" \
             "$image" \
             caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+          RUN_CADDY_INTEGRATION=1 CADDY_TEST_IMAGE="$image" python3 -B -m unittest discover -s tests -p test_caddy_shop_pilot.py -v

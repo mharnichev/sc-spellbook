@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-
+umask 077
 APP_DIR="${APP_DIR:-/opt/soulcuts}"
 PROJECT_NAME="${COMPOSE_PROJECT_NAME:-soulcuts}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -8,128 +8,110 @@ CURRENT_LINK="${APP_DIR}/current"
 RECOVERY_MARKER="${APP_DIR}/backend-recovery-required"
 COMPOSE_FILE="${ROOT_DIR}/docker-compose.prod.yml"
 ENV_FILE="${ROOT_DIR}/versions/production.env"
-PREVIOUS_RELEASE=""
-BACKEND_CHANGED=false
-BACKEND_REPLACEMENT_STARTED=false
-
+WRITERS_STOPPING=false
 compose() {
   docker compose --project-name "${PROJECT_NAME}" --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" "$@"
 }
-
-require_file() {
-  if [[ ! -f "$1" ]]; then
-    echo "Missing required file: $1" >&2
-    exit 1
+source "${ROOT_DIR}/scripts/release-lock.sh"
+acquire_release_lock
+[[ -L "${CURRENT_LINK}" ]] || { echo 'An existing current release is required; bootstrap is a separate procedure.' >&2; exit 1; }
+PREVIOUS_RELEASE="$(readlink -f "${CURRENT_LINK}")"
+previous_backend="$(python3 "${ROOT_DIR}/scripts/release-backend-pin.py" "${PREVIOUS_RELEASE}/versions/production.env")"
+next_backend="$(python3 "${ROOT_DIR}/scripts/release-backend-pin.py" "${ENV_FILE}")"
+BACKEND_CHANGED=false
+[[ "${previous_backend}" == "${next_backend}" ]] || BACKEND_CHANGED=true
+# Release pins, not inherited shell overrides, define backend-change ownership.
+export BACKEND_IMAGE="${next_backend}"
+failed() {
+  local status=$?
+  trap - ERR
+  if [[ "${WRITERS_STOPPING}" == true ]]; then
+    echo 'Deployment failed. Refusing automatic image rollback; database writers remain stopped.' >&2
+    compose stop --timeout 90 backend booking-sms-reminders || true
+    echo "Recovery marker retained: ${RECOVERY_MARKER}" >&2
   fi
+  exit "${status}"
 }
-
-wait_for_service() {
-  local service="$1"
-  local timeout="${2:-120}"
-  local elapsed=0
-  local cid status
-
-  echo "Waiting for ${service}..."
-  while (( elapsed < timeout )); do
-    cid="$(compose ps -q "${service}")"
-    if [[ -n "${cid}" ]]; then
-      status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "${cid}")"
-      if [[ "${status}" == "healthy" || "${status}" == "running" ]]; then
-        echo "${service} is ${status}"
-        return 0
-      fi
-      if [[ "${status}" == "unhealthy" || "${status}" == "exited" || "${status}" == "dead" ]]; then
-        echo "${service} became ${status}" >&2
-        compose logs --tail=100 "${service}" >&2 || true
-        return 1
-      fi
-    fi
-    sleep 5
-    elapsed=$((elapsed + 5))
-  done
-
-  echo "Timed out waiting for ${service}" >&2
-  compose logs --tail=100 "${service}" >&2 || true
-  return 1
-}
-
-restore_previous_release() {
-  if [[ "${BACKEND_REPLACEMENT_STARTED}" == true ]]; then
-    echo "Backend replacement failed; migrations may have committed. Refusing automatic image rollback." >&2
-    compose stop backend booking-sms-reminders || true
-    echo "Database writers remain stopped. Inspect the schema and release before recovery." >&2
-    return
-  fi
-  if [[ -n "${PREVIOUS_RELEASE}" && -d "${PREVIOUS_RELEASE}" && "${PREVIOUS_RELEASE}" != "${ROOT_DIR}" ]]; then
-    echo "Deployment failed. Restoring previous release: ${PREVIOUS_RELEASE}" >&2
-    (
-      cd "${PREVIOUS_RELEASE}"
-      docker compose --project-name "${PROJECT_NAME}" --env-file versions/production.env -f docker-compose.prod.yml up -d --remove-orphans
-    ) || true
-    ln -sfn "${PREVIOUS_RELEASE}" "${CURRENT_LINK}"
-  fi
-}
-
+trap failed ERR
 if [[ -e "${RECOVERY_MARKER}" ]]; then
-  echo "Backend recovery is required. Inspect the schema and running release before removing ${RECOVERY_MARKER}." >&2
+  echo 'Backend recovery is required; reconcile schema, queues and release before clearing the marker.' >&2
   exit 1
 fi
-
-trap restore_previous_release ERR
-
-require_file "${COMPOSE_FILE}"
-require_file "${ENV_FILE}"
-require_file "${APP_DIR}/env/caddy.env"
-require_file "${APP_DIR}/env/postgres.env"
-require_file "${APP_DIR}/env/backend.env"
-require_file "${APP_DIR}/env/public-site.env"
-require_file "${APP_DIR}/env/blog.env"
-require_file "${APP_DIR}/env/admin-app.env"
-
-mkdir -p "${APP_DIR}/data/uploads" "${APP_DIR}/backups" "${APP_DIR}/releases"
-
-if [[ -L "${CURRENT_LINK}" ]]; then
-  PREVIOUS_RELEASE="$(readlink -f "${CURRENT_LINK}")"
-fi
-
+for file in "${COMPOSE_FILE}" "${ENV_FILE}"; do
+  [[ -f "${file}" ]] || { echo "Missing required file: ${file}" >&2; exit 1; }
+done
+for name in caddy postgres backend public-site blog admin-app shop; do
+  [[ -f "${APP_DIR}/env/${name}.env" ]] || { echo "Missing ${name} environment file" >&2; exit 1; }
+done
+[[ -d "${APP_DIR}/data/uploads" ]] || { echo 'Missing persistent uploads directory' >&2; exit 1; }
 cd "${ROOT_DIR}"
-
-echo "Validating Compose configuration..."
 compose config -q
-
-echo "Pulling images..."
-compose pull
-
-if [[ -n "${PREVIOUS_RELEASE}" && -f "${PREVIOUS_RELEASE}/versions/production.env" ]]; then
-  previous_backend_image="$(sed -n 's/^BACKEND_IMAGE=//p' "${PREVIOUS_RELEASE}/versions/production.env" | tail -n 1)"
-  next_backend_image="$(sed -n 's/^BACKEND_IMAGE=//p' "${ENV_FILE}" | tail -n 1)"
-  if [[ -n "${previous_backend_image}" && "${previous_backend_image}" != "${next_backend_image}" ]]; then
-    BACKEND_CHANGED=true
-    echo "Stopping database writers before backup and migrations..."
-    compose stop booking-sms-reminders backend
-    echo "Backend image changed. Creating a database backup before migrations..."
-    bash "${ROOT_DIR}/scripts/backup-db.sh"
-    bash "${ROOT_DIR}/scripts/backup-files.sh"
-  fi
-fi
-
-echo "Starting services..."
+python3 "${ROOT_DIR}/scripts/verify-deployed-images.py" --pins-only
+python3 "${ROOT_DIR}/scripts/check-ingress-network.py" "${PROJECT_NAME}_api_ingress"
+export APP_DIR COMPOSE_PROJECT_NAME="${PROJECT_NAME}"
 if [[ "${BACKEND_CHANGED}" == true ]]; then
-  BACKEND_REPLACEMENT_STARTED=true
-  (umask 077; printf 'release=%s\nimage=%s\n' "${ROOT_DIR}" "${next_backend_image}" > "${RECOVERY_MARKER}")
+compose --profile release pull
+# Reject the still-pinned old backend before touching running writers.
+compose --profile release run --rm --no-deps --entrypoint python migrate -c \
+  'try:
+    from app.core.config import Settings
+    Settings()
+    import app.core.proxy_trust
+    import app.core.migration_readiness
+    import app.core.background_workers
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+    if ScriptDirectory.from_config(Config("alembic.ini")).get_heads() != ["0129_shop_ingress_limits"]:
+        raise RuntimeError("Unexpected migration head")
+except Exception:
+    raise SystemExit("Backend release preflight failed: settings, modules or schema contract unavailable") from None'
+mkdir -p "${APP_DIR}/backups" "${APP_DIR}/releases"
+BACKUP_DIR="$(mktemp -d "${APP_DIR}/backups/pilot-XXXXXXXX")"
+export BACKUP_DIR
+printf 'release=%s\nbackup=%s\n' "${ROOT_DIR}" "${BACKUP_DIR}" > "${RECOVERY_MARKER}"
+WRITERS_STOPPING=true
+compose stop --timeout 90 booking-sms-reminders backend
+remaining="$(compose ps --status running --services)"
+if printf '%s\n' "${remaining}" | grep -Eq '^(backend|booking-sms-reminders)$'; then
+  echo 'Database writers did not stop' >&2
+  false
 fi
+bash "${ROOT_DIR}/scripts/backup-db.sh"
+bash "${ROOT_DIR}/scripts/backup-files.sh"
+python3 "${ROOT_DIR}/scripts/backup-manifest.py" "${BACKUP_DIR}"
+compose --profile release run --rm --no-deps migrate
+compose --profile release run --rm --no-deps --entrypoint python migrate -m app.core.migration_readiness
 compose up -d --remove-orphans
-
-wait_for_service postgres 120
-wait_for_service backend 180
-wait_for_service public-site 120
-wait_for_service blog 120
-wait_for_service admin-app 120
-wait_for_service caddy 120
-
-ln -sfn "${ROOT_DIR}" "${CURRENT_LINK}"
-if [[ "${BACKEND_CHANGED}" == true ]]; then
-  rm "${RECOVERY_MARKER}"
+else
+  compose pull public-site blog admin-app shop caddy
+  # Do not recreate API/reminders or apply backend config on frontend-only releases.
+  compose exec -T backend python -m app.core.migration_readiness
+  compose up -d --no-deps public-site blog admin-app shop caddy
 fi
-
-echo "Deployment completed: ${ROOT_DIR}"
+for service in postgres backend booking-sms-reminders public-site blog admin-app shop caddy; do
+  healthy=false
+  for ((attempt=0; attempt<36; attempt++)); do
+    cid="$(compose ps -q "${service}")"
+    if [[ -n "${cid}" ]]; then
+      state="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "${cid}")"
+      case "${state}" in
+        healthy|running) healthy=true; break ;;
+        unhealthy|exited|dead) break ;;
+      esac
+    fi
+    sleep 5
+  done
+  if [[ "${healthy}" != true ]]; then echo "Service not ready: ${service}" >&2; false; fi
+done
+bash "${ROOT_DIR}/scripts/verify-background-owner.sh"
+python3 "${ROOT_DIR}/scripts/verify-deployed-images.py"
+if [[ "${BACKEND_CHANGED}" == false ]]; then
+  ln -sfn "${ROOT_DIR}" "${CURRENT_LINK}"
+  echo "Frontend-only deployment completed: ${ROOT_DIR}; backend and writers unchanged."
+  exit 0
+fi
+printf 'phase=pending_acceptance\n' >> "${RECOVERY_MARKER}"
+trap - ERR
+echo "Services started, NOT ACCEPTED: ${ROOT_DIR}. Recovery marker retained."
+echo 'Primary must verify authenticated watch scheduler names, queue progress and reminder utility, then run accept-shop-pilot.sh.'
+exit 3

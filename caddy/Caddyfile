@@ -1,6 +1,23 @@
 {
 	email {$ACME_EMAIL}
 	admin off
+	servers {
+		# Cloudflare official ips-v4 / ips-v6, verified 2026-10-19.
+		trusted_proxies static 173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22 2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32
+		trusted_proxies_strict
+		client_ip_headers CF-Connecting-IP
+	}
+}
+
+(direct_api) {
+	reverse_proxy api-ingress-backend:8000 {
+		header_up X-Forwarded-For {client_ip}
+		header_up -CF-Connecting-IP
+		header_up -X-Real-IP
+		header_up -Forwarded
+		header_down Cache-Control "no-store, private"
+		header_down Referrer-Policy "no-referrer"
+	}
 }
 
 (security_headers) {
@@ -35,6 +52,21 @@ soulcuts.com.ua {
 
 	header /robots.txt >Cache-Control "no-store"
 	respond /support-widget 404
+	@shop_pages path /shop /shop/*
+	header @shop_pages X-Robots-Tag "noindex, nofollow, noarchive"
+	header @shop_pages Cache-Control "no-store, private"
+	# Only Shop API families bypass the barbershop BFF. Other API paths retain
+	# its cookie/session-marker, token filtering and public-only boundary.
+	@shop_api path /api/v1/public/customers /api/v1/public/customers/* /api/v1/public/products /api/v1/public/products/* /api/v1/public/categories /api/v1/public/categories/* /api/v1/public/brands /api/v1/public/brands/* /api/v1/public/delivery /api/v1/public/delivery/* /api/v1/public/orders /api/v1/public/orders/* /api/v1/public/feedback/email
+	handle @shop_api {
+		import direct_api
+	}
+	redir /shop /shop/ 308
+	handle /shop/* {
+		reverse_proxy shop:3000 {
+			header_down Referrer-Policy "no-referrer"
+		}
+	}
 
 	redir /blog /blog/ 308
 
@@ -56,6 +88,10 @@ soulcuts.com.ua {
 admin.soulcuts.com.ua {
 	import security_headers
 	encode zstd gzip
+	@browser_api path /api/v1 /api/v1/*
+	handle @browser_api {
+		import direct_api
+	}
 	reverse_proxy admin-app:3000 {
 		header_down Referrer-Policy "strict-origin-when-cross-origin"
 	}
@@ -64,7 +100,5 @@ admin.soulcuts.com.ua {
 api.soulcuts.com.ua {
 	import security_headers
 	encode zstd gzip
-	reverse_proxy backend:8000 {
-		header_down Referrer-Policy "strict-origin-when-cross-origin"
-	}
+	import direct_api
 }
