@@ -2,8 +2,9 @@
 
 ## Authorized scope
 
-Deploy only the reviewed catalog-access and backoffice display-photo task diff
-over the current production release, preserving unrelated local changes.
+Deploy the reviewed catalog-access and backoffice display-photo task diff,
+plus the subsequently authorized stock/POS additions described below, over the
+current production release, preserving unrelated local changes.
 Do not alter production roles, photo records, Shop pilot flags or allowlist.
 Do not create real orders, payments, fiscal documents, shipments, OTPs or other
 notifications. Normal existing barbershop automation must remain enabled.
@@ -19,10 +20,43 @@ and superuser policy and existing inventory/POS reads; canonical processed
 photos for display, while original URLs remain the edit source. Explicit empty
 display arrays remain authoritative rather than reviving inactive originals.
 
-Only backend and admin image pins may change. Public-site, Blog, Shop, Caddy
+Only backend, admin and Shop image pins may change. Public-site, Blog, Caddy
 and PostgreSQL pins must remain identical to release `6a6d817`.
 
-## Verified candidates
+## Final Stock/POS Additions
+
+While the first infra check was queued, the user authorized all latest logic.
+Content comparison against the prepared release found seven additional backend
+paths and six frontend source/test paths. Other local differences were stale
+pre-release reversals or unrelated generated/IDE/data files, not new release work.
+
+- Backend source `3356f0bce30f3cefd3c00313e324c529474f36d8`: stock-first
+  ordering before pagination/search limits, including effective promotion prices,
+  and optional `in_stock` filtering on the public product-list endpoint only.
+  Category filter parameters remain unchanged. Seven-path integrated suite:
+  79 passed, zero skipped, including real PostgreSQL filtering/totals/pagination,
+  effective prices and null-reservation compatibility. No schema/config changes.
+- Frontend source `50c65529f5c501429f6736e8ee3a9d83f962dce3`: compact POS
+  search/scanner/photo fallbacks, sales-grant-conditioned POS navigation, mobile
+  CSS cascade, accessible test locators and in-stock home/load-more requests.
+  Independent review found a read-navigation regression; inventory navigation
+  remains unconditional, while mutation and sale preparation guards are unchanged.
+  Six input paths plus one focused regression test: admin 558 and Shop 143 tests
+  passed, zero skipped; both typechecks and builds passed. Focused six overlap.
+- Independent exact combined source review found no remaining blockers.
+- Final offline amd64 images passed backend authorization/head checks, admin
+  startup/SPA assets and Shop SSR/assets/deep-link/noindex checks. Only local
+  GET-only fixtures were used, without application lifespan or provider actions.
+- Frozen Nuxt output manifests: admin
+  `d9902fec4af360cfca1c3ff5e8ab9e51ef1996e2eb3001244f5053aa8a579f68`,
+  Shop `881355019fb2f85ac91c6609f97d11eee7b6cdd91e5518efaac35a2e5e265237`.
+- The image pins now point to these final sources, superseding the prepared
+  candidates below. The previous green infra run does not authorize this new
+  pin set: require a fresh successful exact-head CI before merge/deployment.
+- Production UI checks remain part of acceptance; source/unit/offline-image
+  evidence is not a claim of completed production visual/master-admin testing.
+
+## Previously Verified Prepared Candidates
 
 - Backend source `5d1aa2637a01611959aba747977415729b18d664`: exact nine-file task
   patch over current main `606fa5120`, no conflicts or unrelated drift.
