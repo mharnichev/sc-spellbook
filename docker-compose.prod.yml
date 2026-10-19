@@ -64,6 +64,7 @@ services:
       NODE_ENV: production
       NUXT_APP_BASE_URL: /blog/
       NUXT_PUBLIC_BLOG_SITE_URL: https://soulcuts.com.ua/blog
+      NUXT_PUBLIC_SITE_URL: https://soulcuts.com.ua/blog
     expose:
       - "3000"
     healthcheck:
