@@ -23,7 +23,8 @@ class CaddyPilotTests(unittest.TestCase):
             port = 18081 + index
             source = source.replace(upstream, f'127.0.0.1:{port}')
             label = upstream.split(':')[0]
-            source += f'\nhttp://:{port} {{\n respond "{label}|{{http.request.uri}}|{{http.request.header.Authorization}}|{{http.request.header.X-Forwarded-For}}"\n}}\n'
+            missing = '\n respond /media/products/missing.webp "missing" 404' if label == 'api-ingress-backend' else ''
+            source += f'\nhttp://:{port} {{{missing}\n header X-Fixture-Upstream "{label}"\n respond "{label}|{{http.request.uri}}|{{http.request.header.Authorization}}|{{http.request.header.X-Forwarded-For}}"\n}}\n'
         path = Path(cls.temp.name) / 'Caddyfile'
         path.write_text(source)
         subprocess.run(['docker', 'run', '-d', '--rm', '--pull=never', '--network', 'none', '--name', cls.name,
@@ -85,6 +86,41 @@ class CaddyPilotTests(unittest.TestCase):
         support = self.request('/support-widget', 'www.soulcuts.com.ua')
         self.assertTrue(support.stdout.startswith('public-site|'))
         self.assertNotIn('X-Frame-Options:', support.stderr)
+
+    def test_admin_product_media_reaches_existing_backend_without_rewriting(self):
+        for path in ('/media/products/processed.webp', '/media/products/nested/photo.webp?version=1'):
+            with self.subTest(path=path):
+                result = self.request(path, 'admin.soulcuts.com.ua')
+                self.assertEqual(result.stdout, f'api-ingress-backend|{path}||127.0.0.1')
+                self.assertIn('Cache-Control: no-store, private', result.stderr)
+                self.assertIn('X-Content-Type-Options: nosniff', result.stderr)
+                self.assertIn("Content-Security-Policy: sandbox; default-src 'none'; frame-ancestors 'none'", result.stderr)
+
+    def test_admin_missing_product_media_preserves_backend_404(self):
+        result = self.request('/media/products/missing.webp', 'admin.soulcuts.com.ua', check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('404', result.stderr)
+        self.assertNotIn('admin-app|', result.stdout)
+
+    def test_admin_product_media_head_and_mutation_boundaries(self):
+        for method, upstream in [('HEAD', 'api-ingress-backend'), ('POST', 'admin-app'),
+                                 ('PUT', 'admin-app'), ('DELETE', 'admin-app')]:
+            with self.subTest(method=method):
+                wire = (f'{method} /media/products/photo.webp HTTP/1.1\r\n'
+                        'Host: admin.soulcuts.com.ua\r\nContent-Length: 0\r\nConnection: close\r\n\r\n')
+                # Keep the request socket open until the proxy can finish its response.
+                result = subprocess.run(['docker', 'exec', '-i', self.name, 'sh', '-c',
+                                         '{ cat; sleep 1; } | nc -w 2 127.0.0.1 18080'], input=wire, capture_output=True,
+                                        text=True, check=True, timeout=5)
+                self.assertIn(f'X-Fixture-Upstream: {upstream}', result.stdout)
+                if method == 'HEAD':
+                    self.assertNotIn('api-ingress-backend|', result.stdout)
+
+    def test_admin_media_fix_does_not_route_other_paths_to_backend(self):
+        for path in ('/media/barbers/passports/example.webp', '/media/products-archive/photo.webp',
+                     '/products', '/_nuxt/app.js'):
+            with self.subTest(path=path):
+                self.assertTrue(self.request(path, 'admin.soulcuts.com.ua').stdout.startswith('admin-app|'))
 
 
 if __name__ == '__main__':
