@@ -226,3 +226,38 @@ remain unverified operational requirements, not claims of this rehearsal. Public
 opening and real purchase/payment/fiscal/shipment/return acceptance remain
 separate. The user performs real-flow acceptance; the agent performs no real
 orders, OTP/SMS, provider POST, payment, receipt or shipment as test actions.
+
+## Initial backend cutover acceptance
+
+Release `20261019T092146Z-491b5ee` reached head 0129 and was accepted through
+the normal pending-acceptance command after live read-only checks. Its paired
+backup is `/opt/soulcuts/backups/pilot-KaRSOQyv`; both sealed archive hashes and
+private permissions were rechecked. No database restore or downgrade occurred.
+
+The existing authenticated Chrome session showed role owner, state running,
+no error and all 13 scheduler names matching effective settings. Exactly one
+owner advisory lock was held; API workers=1, DB connections=7/100. The separate
+reminder container was running with no tracebacks/errors. SMS totals remained
+2954 accepted, 246 delivered, 20 pre-existing failed; no pending/uncertain status
+was present and no replay was forced. Real booking count increased naturally
+from 379 to 380; customer count stayed 2221 and orders stayed zero.
+
+Actual Cloudflare GET probes from two distinct clients remained distinct at the
+backend. Forged forwarding headers were ignored both through direct origin and
+from an untrusted SSR peer. The backend socket peer from Caddy was the reserved
+172.30.41.2. Direct-origin access remains reachable, as before; this is not a
+claim of Cloudflare-only origin authentication or new firewall restrictions.
+
+Shop/root assets, one real product deep link, robots/header/meta noindex and
+private API-base non-disclosure passed. Three Nuxt assets returned 200; public
+catalog had 228 visible products. Five health GETs took 0.178-0.335s (not a peak
+load benchmark). Public root had no Shop navigation link. Public/blog image IDs
+and start times remained unchanged. Current customer 10 remains unverified;
+ordinary OTP login is still required, never bypassed.
+
+The production UI exposed one footer route defect: journal linked into the Shop
+base as `/shop/blog/` (404). The follow-up Shop-only source `71743e30` uses an
+external/root `/blog/` link, retains all other footer links under `/shop/`, and
+passed 142 Shop tests, typecheck/build and desktop/mobile GET-only DOM smoke.
+Only SHOP_IMAGE changes in the follow-up; backend, reminder, admin, public/blog
+and engine pins stay the same. Its frontend-only deployment must not stop writers.
