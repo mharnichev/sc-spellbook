@@ -20,6 +20,13 @@ SPEC.loader.exec_module(MODULE)
 
 
 class RehearsalTests(unittest.TestCase):
+    def test_current_english_baseline_is_a_supported_payment_source(self):
+        calls,error,reported,output=self.exercise(source_head='0136_category_names_en')
+        self.assertIsNone(error)
+        self.assertTrue(reported)
+        self.assertIn('"result": "passed"',output)
+        self.assertTrue(any(call[-2:]==['upgrade','head'] for call in calls))
+
     def test_dump_guard_only_removes_a_paired_top_level_guard(self):
         self.assertEqual(MODULE.strip_dump_guard(b'-- dump\n\\restrict Ab123\nCREATE TABLE x();\n\\unrestrict Ab123\n'),
                          b'-- dump\nCREATE TABLE x();\n')
@@ -256,8 +263,8 @@ class RehearsalTests(unittest.TestCase):
                     ('products', 'idempotent'), ('categories', 'idempotent')]
         self.assertEqual(observed['english_calls'], expected)
         metadata = observed['metadata']
-        self.assertEqual(metadata['head'], '0136_category_names_en')
-        self.assertEqual(set(metadata['archives']), {'production-0134.dump', 'upgraded-0136.dump'})
+        self.assertEqual(metadata['head'], '0137_shop_online_payment')
+        self.assertEqual(set(metadata['archives']), {'production-0134.dump', 'upgraded-0137.dump'})
         english = metadata['english_backfill']
         self.assertEqual(english['counts'], dict(products=552, categories=44))
         self.assertEqual(english['input_sha256'], observed['hashes'])

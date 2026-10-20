@@ -45,7 +45,8 @@ class RehearsalSourceHeadTests(unittest.TestCase):
                     '--postgres-image', 'postgres', '--confirm-production-copy']
         for extra, expected in (([], MODULE.BASE),
                                 (['--source-head', '0129_shop_ingress_limits'], '0129_shop_ingress_limits'),
-                                (['--source-head', '0134_shop_canonical_collation'], '0134_shop_canonical_collation')):
+                                (['--source-head', '0134_shop_canonical_collation'], '0134_shop_canonical_collation'),
+                                (['--source-head', '0136_category_names_en'], '0136_category_names_en')):
             with self.subTest(extra=extra):
                 captured = []
 

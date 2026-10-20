@@ -345,6 +345,23 @@ class BackupRestoreTests(unittest.TestCase):
                 self.assertTrue((self.path / 'backend-recovery-required').exists())
                 self.assertEqual((self.path / 'current').resolve(), self.previous.resolve())
 
+    def test_pending_or_dangling_shop_online_fence_blocks_acceptance(self):
+        self.prepare_deploy()
+        (self.path/'backend-recovery-required').write_text(f'release={self.release_root}\nphase=pending_acceptance\n')
+        self.env.update(PILOT_MANUAL_GATE='verified',EXPECTED_RELEASE=str(self.release_root))
+        marker=self.path/'shop-online-activation-required'
+        for symlink in (False,True):
+            with self.subTest(symlink=symlink):
+                if symlink:
+                    marker.symlink_to(self.path/'missing-private-target')
+                else:
+                    marker.write_text('private recovery state')
+                self.assertNotEqual(self.run_script('accept-shop-pilot.sh').returncode,0)
+                self.assertFalse(self.calls.exists())
+                self.assertTrue((self.path/'backend-recovery-required').exists())
+                self.assertEqual((self.path/'current').resolve(),self.previous.resolve())
+                marker.unlink()
+
     def test_frontend_image_mismatch_leaves_current_and_writers_untouched(self):
         self.prepare_deploy()
         self.same_backend()
@@ -371,7 +388,8 @@ class BackupRestoreTests(unittest.TestCase):
         self.assertIn('Settings()', code)
         self.assertIn('import app.services.master_mono', code)
         self.assertIn('import app.services.mono_checkbox_poll', code)
-        self.assertIn('["0136_category_names_en"]', code)
+        self.assertIn('["0137_shop_online_payment"]', code)
+        self.assertIn('import app.services.shop_online_payment', code)
         self.assertIn('import app.utils.backfill_product_names_en', code)
         self.assertIn('import app.utils.backfill_category_names_en', code)
         harness = '''import builtins
