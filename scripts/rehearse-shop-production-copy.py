@@ -10,16 +10,18 @@ import re
 import secrets
 import shutil
 import signal
+import stat
 import subprocess
 import uuid
 
 
-HEAD = "0134_shop_canonical_collation"
+HEAD = "0136_category_names_en"
 BASE = "0110_nova_poshta_directory"
+SOURCE_HEADS = (BASE, "0129_shop_ingress_limits", "0134_shop_canonical_collation")
 
 
 def source_archive_name(head):
-    if head not in (BASE, "0129_shop_ingress_limits"):
+    if head not in SOURCE_HEADS:
         raise RuntimeError("Unreviewed source baseline")
     return "production-" + head.split("_", 1)[0] + ".dump"
 
@@ -33,6 +35,100 @@ def verify_source_copy(sql, expected):
     if collation != "en_US.utf8" or ctype != "en_US.utf8":
         raise RuntimeError("Source copy does not match the reviewed production locale")
     return dict(source_head=actual, source_collation=collation, source_ctype=ctype)
+
+
+ENGLISH_INPUTS = (
+    ('products', 'prod-all-names-en.json', 'app.utils.backfill_product_names_en', 552),
+    ('categories', 'prod-all-category-names-en.json', 'app.utils.backfill_category_names_en', 44),
+)
+ENGLISH_COUNTS_SQL = """SELECT json_build_object(
+ 'products',(SELECT count(*) FROM products WHERE name_en IS NOT NULL AND product_type_en IS NOT NULL),
+ 'categories',(SELECT count(*) FROM categories WHERE name_en IS NOT NULL))"""
+
+
+def seal_english_inputs(directory, hashes, output, *, backup_root=None):
+    directory = directory.resolve()
+    backup_root = Path('/opt/soulcuts/backups') if backup_root is None else backup_root
+    if (directory.parent != backup_root.resolve() or directory.stat().st_uid != os.geteuid()
+            or stat.S_IMODE(directory.stat().st_mode) != 0o700):
+        raise RuntimeError('English inputs require an owned private backup directory')
+    sealed = output / 'reviewed-inputs'
+    sealed.mkdir(mode=0o700)
+    result = {}
+    for kind, name, _, count in ENGLISH_INPUTS:
+        path = directory / name
+        if path.is_symlink() or not path.is_file() or path.stat().st_mode & 0o077:
+            raise RuntimeError('English input must be a private regular file')
+        data = path.read_bytes()
+        checksum = hashlib.sha256(data).hexdigest()
+        if checksum != hashes[kind]:
+            raise RuntimeError('English input checksum differs from the reviewed bundle')
+        payload = json.loads(data)
+        if payload.get('count') != count or len(payload.get(kind, [])) != count:
+            raise RuntimeError('English input count differs from the reviewed complete catalog')
+        fd = os.open(sealed/name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400)
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        result[kind] = checksum
+    sealed.chmod(0o500)
+    fd = os.open(sealed, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    fd = os.open(output, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    return sealed, result
+
+
+def rehearse_english(execute, sql, candidate, network, env, run, output, inputs, hashes):
+    reports = output/'english-reports'
+    reports.mkdir(mode=0o700)
+    fd = os.open(output, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    summaries = {}
+    # Two separate transactions, never presented as one combined atomic update.
+    for phase in ('dry-run', 'apply', 'idempotent'):
+        for kind, name, module, count in ENGLISH_INPUTS:
+            if hashlib.sha256((inputs/name).read_bytes()).hexdigest() != hashes[kind]:
+                raise RuntimeError('Sealed English input drifted')
+            report_name = kind+'-'+phase+'.json'
+            command = ['docker','run','--rm','--name',run+'-english-'+kind+'-'+phase,
+                       '--user',str(os.geteuid())+':'+str(os.getegid()),
+                       '--network',network,'--env-file',str(env),'--memory=768m','--cpus=1',
+                       '--pids-limit=128','--pull=never','-v',str(inputs)+':/reviewed-inputs:ro',
+                       '-v',str(reports)+':/rehearsal-reports:rw','--entrypoint','python',candidate,
+                       '-m',module,'--input','/reviewed-inputs/'+name,
+                       '--report','/rehearsal-reports/'+report_name]
+            if phase == 'apply':
+                command.append('--apply')
+            summary = json.loads(execute(command))
+            updated = 0 if phase == 'idempotent' else count
+            if (summary.get('count') != count or summary.get('updated') != updated
+                    or summary.get('status') != ('committed' if phase == 'apply' else 'dry_run')):
+                raise RuntimeError('Unexpected English backfill summary')
+            report_path = reports/report_name
+            if (report_path.is_symlink() or not report_path.is_file()
+                    or report_path.stat().st_uid != os.geteuid() or stat.S_IMODE(report_path.stat().st_mode) != 0o600):
+                raise RuntimeError('English rollback report is not a private regular file')
+            report = json.loads(report_path.read_text())
+            if (report.get('input_sha256') != hashes[kind] or report.get('count') != count
+                    or report.get('status') != ('prepared_apply' if phase == 'apply' else 'dry_run')):
+                raise RuntimeError('English rollback report contract differs')
+            summaries[kind+'-'+phase] = summary
+    counts = json.loads(sql('upgrade_copy', ENGLISH_COUNTS_SQL))
+    if counts != {'products':552, 'categories':44}:
+        raise RuntimeError('English coverage differs from the complete reviewed inputs')
+    return dict(counts=counts, summaries=summaries, input_sha256=hashes,
+                transactions='separate products and categories')
 
 
 SCHEMA_SQL = """SELECT jsonb_build_object(
@@ -158,9 +254,17 @@ def main():
     parser.add_argument("--candidate", required=True)
     parser.add_argument("--previous", required=True)
     parser.add_argument("--postgres-image", required=True)
-    parser.add_argument("--source-head", choices=(BASE, "0129_shop_ingress_limits"), default=BASE)
+    parser.add_argument("--source-head", choices=SOURCE_HEADS, default=BASE)
+    parser.add_argument("--english-input-dir", type=Path)
+    parser.add_argument("--english-products-sha256")
+    parser.add_argument("--english-categories-sha256")
     parser.add_argument("--confirm-production-copy", action="store_true", required=True)
     args = parser.parse_args()
+    english_arguments = (args.english_input_dir, args.english_products_sha256, args.english_categories_sha256)
+    if any(english_arguments) and (not all(english_arguments) or args.source_head != '0134_shop_canonical_collation'):
+        parser.error('English rehearsal requires all reviewed input arguments and explicit source head 0134')
+    if args.english_input_dir and any(not re.fullmatch(r'[0-9a-f]{64}', value) for value in english_arguments[1:]):
+        parser.error('English input checksums must be exact SHA-256 values')
     for image in (args.candidate, args.previous):
         if not re.fullmatch(r"ghcr\.io/mharnichev/sc-be/api@sha256:[0-9a-f]{64}", image):
             parser.error("Images must use immutable digests in the approved backend registry")
@@ -170,9 +274,16 @@ def main():
     run = "shop-rehearsal-" + uuid.uuid4().hex
     output = Path("/opt/soulcuts/backups") / run
     output.mkdir(mode=0o700, parents=False)
+    english_inputs = None
+    english_hashes = None
+    if args.english_input_dir:
+        english_inputs, english_hashes = seal_english_inputs(args.english_input_dir,
+            dict(products=args.english_products_sha256, categories=args.english_categories_sha256), output)
     network, postgres = run + "-net", run + "-pg"
     migration_task, compatibility_task = run + "-migration", run + "-compatibility"
     comparison_task = run + "-schema-comparison"
+    english_tasks = [run+'-english-'+kind+'-'+phase for phase in ('dry-run','apply','idempotent')
+                     for kind, _, _, _ in ENGLISH_INPUTS]
     log = (output / "commands.log").open("xb")
 
     def execute(command, *, data=None, target=None):
@@ -260,6 +371,16 @@ def main():
         after_sequences = sequences("upgrade_copy")
         if any(after_sequences.get(name) != value for name, value in before_sequences.items()):
             raise RuntimeError("Existing production sequences changed during the migration rehearsal")
+        english_result = None
+        if english_inputs:
+            english_result = rehearse_english(execute, sql, args.candidate, network, env, run,
+                                               output, english_inputs, english_hashes)
+            if before != snapshot('upgrade_copy', tables):
+                raise RuntimeError('English backfill changed original production columns')
+            if after_sequences != sequences('upgrade_copy'):
+                raise RuntimeError('English backfill changed sequences')
+            english_result['original_columns_unchanged'] = True
+            english_result['sequences_unchanged'] = True
         upgraded_tables = json.loads(sql("upgrade_copy", """
             SELECT json_object_agg(table_name, columns) FROM (
               SELECT table_name, json_agg(column_name ORDER BY ordinal_position) AS columns
@@ -267,7 +388,7 @@ def main():
               AND table_name IN (SELECT tablename FROM pg_tables WHERE schemaname='public')
               GROUP BY table_name) s"""))
         upgraded = snapshot("upgrade_copy", upgraded_tables)
-        upgrade_archive = output / "upgraded-0134.dump"
+        upgrade_archive = output / "upgraded-0136.dump"
         dump("upgrade_copy", upgrade_archive)
         sql("postgres", "CREATE DATABASE restore_copy OWNER rehearsal")
         restore("restore_copy", upgrade_archive)
@@ -323,6 +444,7 @@ engine.dispose()
             raise RuntimeError("Private production copy did not stop")
         stopped = True
         report = dict(candidate=args.candidate, previous=args.previous, postgres=args.postgres_image, **source, head=HEAD,
+                      english_backfill=english_result,
                       existing_rows_unchanged=True, existing_sequences_unchanged=True,
                       restored_rows_equal=True, restored_sequences_equal=True, restored_schema_equal_after_finite_contract=True,
                       raw_schema_equal=raw_schema_equal,
@@ -339,7 +461,7 @@ engine.dispose()
             if not stopped:
                 try:
                     # Killing a docker CLI on timeout does not kill its container process.
-                    for task in (migration_task, compatibility_task, comparison_task):
+                    for task in (migration_task, compatibility_task, comparison_task, *english_tasks):
                         result = subprocess.run(["docker", "ps", "-aq", "--filter", "name=^/" + task + "$"],
                                                 stdout=subprocess.PIPE, stderr=log, timeout=30)
                         if result.returncode:

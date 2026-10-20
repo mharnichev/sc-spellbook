@@ -19,7 +19,7 @@ class RehearsalSourceHeadTests(unittest.TestCase):
         sql.assert_called_once_with('upgrade_copy', 'SELECT version_num FROM alembic_version')
 
     def test_matching_source_is_propagated_to_archive_and_report_metadata(self):
-        for head in (MODULE.BASE, '0129_shop_ingress_limits'):
+        for head in MODULE.SOURCE_HEADS:
             with self.subTest(head=head):
                 sql = Mock(side_effect=[head, 'en_US.utf8', 'en_US.utf8'])
                 self.assertEqual(MODULE.verify_source_copy(sql, head),
@@ -44,7 +44,8 @@ class RehearsalSourceHeadTests(unittest.TestCase):
         required = ['--candidate', 'candidate', '--previous', 'previous',
                     '--postgres-image', 'postgres', '--confirm-production-copy']
         for extra, expected in (([], MODULE.BASE),
-                                (['--source-head', '0129_shop_ingress_limits'], '0129_shop_ingress_limits')):
+                                (['--source-head', '0129_shop_ingress_limits'], '0129_shop_ingress_limits'),
+                                (['--source-head', '0134_shop_canonical_collation'], '0134_shop_canonical_collation')):
             with self.subTest(extra=extra):
                 captured = []
 

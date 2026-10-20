@@ -24,7 +24,9 @@ jobs:
 
       - name: Validate backup and deployment safeguards
         run: |
-          bash -n scripts/deploy.sh scripts/restore-db.sh scripts/backup-db.sh scripts/backup-files.sh scripts/release-lock.sh scripts/verify-background-owner.sh scripts/accept-shop-pilot.sh scripts/rollback.sh
+          for script in scripts/deploy.sh scripts/restore-db.sh scripts/backup-db.sh scripts/backup-files.sh scripts/release-lock.sh scripts/verify-background-owner.sh scripts/accept-shop-pilot.sh scripts/rollback.sh scripts/run-english-backfill.sh; do
+            bash -n "$script"
+          done
           sh -n examples/backend/start.sh examples/backend/start-production.sh
           python3 -B -m unittest discover -s tests -v
 
