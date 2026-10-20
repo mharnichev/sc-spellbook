@@ -12,6 +12,9 @@ PIN = 'ghcr.io/mharnichev/sc-be/api@sha256:'+'a'*64
 
 
 class EnglishWrapperTests(unittest.TestCase):
+    wrapper_name = 'run-english-backfill.sh'
+    helper_name = 'apply-english-backfill.py'
+
     def exercise(self, mode='apply', failure=None, recovery=False):
         with tempfile.TemporaryDirectory(prefix='english-wrapper-') as directory:
             app = Path(directory)
@@ -23,11 +26,11 @@ class EnglishWrapperTests(unittest.TestCase):
             (app/'backend-recovery-required').write_text('release='+str(release)+'\nphase=pending_acceptance\n')
             (scripts/'release-lock.sh').write_text('acquire_release_lock() { mkdir -p "$APP_DIR/release.lock"; printf "%s" "$$" > "$APP_DIR/release.lock/pid"; }\n')
             (scripts/'release-backend-pin.py').write_text('import os; print("bad" if os.environ.get("BAD_PIN") else '+repr(PIN)+')\n')
-            (scripts/'apply-english-backfill.py').write_text('''import os,signal,sys,json,hashlib
+            helper = '''import os,signal,sys,json,hashlib
 from pathlib import Path
 app=Path(os.environ['TEST_APP'])
 assert int(os.environ['RELEASE_LOCK_OWNER_PID'])==os.getppid()==int((app/'release.lock/pid').read_text())
-(app/'english-backfill-required').write_text(json.dumps(dict(release=os.environ['EXPECTED_RELEASE'],env_sha256=hashlib.sha256((app/'env/backend.env').read_bytes()).hexdigest())))
+(app/'english-backfill-required').write_text(json.dumps(dict(release=os.environ['EXPECTED_RELEASE'],pre_restart_original_verified=True,tools={},env_sha256=hashlib.sha256((app/'env/backend.env').read_bytes()).hexdigest())))
 if os.environ.get('ENV_DRIFT'):(app/'env/backend.env').write_text('CHANGED=fixture')
 if os.environ.get('HELPER_FAIL'):raise SystemExit(11)
 if sys.argv[1]=='finalize':
@@ -35,7 +38,11 @@ if sys.argv[1]=='finalize':
  (app/'english-backfill-required').unlink()
  if os.environ.get('SIGNAL_AFTER_FINALIZE'):os.kill(os.getppid(),signal.SIGTERM)
 elif os.environ.get('SIGNAL_PARENT'):os.kill(os.getppid(),signal.SIGTERM)
-''')
+'''
+            cleanup = '''def cleanup_release(root):
+ with (root.parents[1]/'task-cleanup').open('w') as stream: stream.write('verified')
+'''
+            (scripts/self.helper_name).write_text(cleanup + "if __name__ == '__main__':\n" + ''.join(' '+line+'\n' for line in helper.splitlines()))
             binary = app/'bin'
             binary.mkdir()
             docker = binary/'docker'
@@ -51,14 +58,14 @@ raise SystemExit(73 if 'up' in sys.argv and os.environ.get('FAIL_UP') else 0)
                        PATH=str(binary)+':'+os.environ['PATH'])
             if failure:
                 env[failure] = '1'
-            source = (ROOT/'scripts/run-english-backfill.sh').read_text().replace('APP_DIR=/opt/soulcuts\n','APP_DIR='+directory+'\n')
+            source = (ROOT/'scripts'/self.wrapper_name).read_text().replace('APP_DIR=/opt/soulcuts\n','APP_DIR='+directory+'\n')
             tools = scripts
             if recovery:
                 tools = app/'backups/reviewed-recovery-tools'
                 tools.mkdir(parents=True,mode=0o700)
-                (tools/'apply-english-backfill.py').write_bytes((scripts/'apply-english-backfill.py').read_bytes())
-                (scripts/'apply-english-backfill.py').write_text('raise SystemExit(86)\n')
-            wrapper = tools/'run-english-backfill.sh'
+                (tools/self.helper_name).write_bytes((scripts/self.helper_name).read_bytes())
+                (scripts/self.helper_name).write_text('raise SystemExit(86)\n')
+            wrapper = tools/self.wrapper_name
             wrapper.write_text(source)
             result = subprocess.run(['bash',str(wrapper),mode,'fixture-input','b'*64,'c'*64],
                                     text=True,capture_output=True,env=env,timeout=15)

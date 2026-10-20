@@ -5,6 +5,11 @@ import sys
 
 HEAD = '0136_category_names_en'
 FIELDS = {'products': ('name_en', 'product_type_en'), 'categories': ('name_en',)}
+CATALOG_COLUMNS = {'products': ('id', 'name', 'slug', 'product_type'),
+                   'categories': ('id', 'name', 'slug', 'parent_id')}
+ORIGINAL_KEYS = ('head', 'database_identity', 'inventory', 'fingerprints', 'sequences', 'catalog')
+LIVE_KEYS = ('database_identity', 'catalog')
+ROLLBACK_LOCK_SQL = 'LOCK TABLE categories, products IN SHARE ROW EXCLUSIVE MODE'
 
 
 def require(value, message='English database safety condition failed'):
@@ -25,7 +30,7 @@ def validate_targets(baseline, target):
 
 
 def verify_original(current, baseline):
-    for key in ('head', 'database_identity', 'inventory', 'fingerprints', 'sequences', 'catalog'):
+    for key in ORIGINAL_KEYS:
         require(current[key] == baseline[key], 'Original database provenance changed: '+key)
 
 
@@ -44,10 +49,8 @@ def snapshot(connection, text):
     for entry in inventory:
         table = entry['table_name']
         row = 'to_jsonb(t)'
-        if table == 'products':
-            row += " - ARRAY['name_en','product_type_en']"
-        elif table == 'categories':
-            row += " - ARRAY['name_en']"
+        if table in FIELDS:
+            row += ' - ARRAY[' + ','.join("'"+field+"'" for field in FIELDS[table]) + ']'
         checksum = "encode(sha256(convert_to(("+row+")::text,'UTF8')),'hex')"
         query = ("SELECT count(*) AS rows, encode(sha256(convert_to(coalesce(string_agg("+checksum+
                  ",'' ORDER BY "+checksum+"),''),'UTF8')),'hex') AS sha256 FROM public."+
@@ -58,10 +61,9 @@ def snapshot(connection, text):
     for name in names:
         sequences[name] = dict(connection.execute(text('SELECT last_value,is_called FROM public.'+
                                                        preparer.quote_identifier(name))).mappings().one())
-    catalog = {
-        'products': [dict(row) for row in connection.execute(text('SELECT id,name,slug,product_type FROM products ORDER BY id')).mappings()],
-        'categories': [dict(row) for row in connection.execute(text('SELECT id,name,slug,parent_id FROM categories ORDER BY id')).mappings()],
-    }
+    catalog = {table: [dict(row) for row in connection.execute(
+        text('SELECT '+','.join(columns)+' FROM '+table+' ORDER BY id')).mappings()]
+        for table, columns in CATALOG_COLUMNS.items()}
     english = {table:[dict(row) for row in connection.execute(text('SELECT id,'+','.join(fields)+' FROM '+table+' ORDER BY id')).mappings()]
                for table, fields in FIELDS.items()}
     return dict(head=HEAD, database_identity=database_identity, inventory=inventory, fingerprints=fingerprints, sequences=sequences,
@@ -78,7 +80,7 @@ def operate(connection, text, mode, payload, expected_database=None):
                 'Wrong production database')
     if mode == 'rollback':
         # Deterministic lock order; all source and whole-vector CAS checks precede writes.
-        connection.execute(text('LOCK TABLE categories, products IN SHARE ROW EXCLUSIVE MODE'))
+        connection.execute(text(ROLLBACK_LOCK_SQL))
     current = snapshot(connection, text)
     if mode == 'snapshot':
         return current
@@ -87,13 +89,15 @@ def operate(connection, text, mode, payload, expected_database=None):
     if mode in ('verify', 'rollback'):
         verify_original(current, baseline)
     elif mode == 'verify-live':
-        require(current['database_identity'] == baseline['database_identity'], 'Database identity changed')
-        require(current['catalog'] == baseline['catalog'], 'Catalog source identity changed')
+        for key in LIVE_KEYS:
+            message = {'database_identity': 'Database identity changed',
+                       'catalog': 'Catalog source identity changed'}.get(key, 'Live database provenance changed: '+key)
+            require(current[key] == baseline[key], message)
     else:
         raise RuntimeError('Unrecognized database operation')
     if mode != 'rollback':
         require(current['english'] == target, 'English coverage differs from the reviewed target')
-        return dict(verified=True, head=HEAD, products=len(target['products']), categories=len(target['categories']))
+        return dict(verified=True, head=HEAD, **{table: len(rows) for table, rows in target.items()})
     for table in FIELDS:
         require(current['english'][table] in (baseline['english'][table], target[table]),
                 'English entity has a mixed or foreign outcome: '+table)

@@ -22,9 +22,11 @@ def main():
     if sys.flags.optimize:
         raise RuntimeError('Optimized execution is forbidden')
     args = sys.argv[1:]
-    modules = ('app.utils.backfill_product_names_en','app.utils.backfill_category_names_en')
+    modules = ('app.utils.backfill_product_names_en','app.utils.backfill_category_names_en',
+               'app.utils.backfill_shop_content_en')
     module = len(args) >= 2 and args[0] == '-m' and args[1] in modules
-    script = bool(args) and args[0] == '/release-tools/scripts/english-backfill-db.py'
+    script = bool(args) and args[0] in ('/release-tools/scripts/english-backfill-db.py',
+                                      '/release-tools/scripts/shop-content-backfill-db.py')
     if not (module or script):
         raise RuntimeError('Unreviewed database tool')
     restrict_python_sockets()

@@ -20,6 +20,14 @@ SPEC.loader.exec_module(MODULE)
 
 
 class RehearsalTests(unittest.TestCase):
+    def test_current_payment_baseline_is_supported_content_source(self):
+        observed = {}
+        _, error, reported, _ = self.exercise(source_head='0137_shop_online_payment', observed=observed)
+        self.assertIsNone(error)
+        self.assertTrue(reported)
+        self.assertEqual(observed['metadata']['head'], '0138_shop_content_en')
+        self.assertIn('production-0137.dump', observed['metadata']['archives'])
+
     def test_current_english_baseline_is_a_supported_payment_source(self):
         calls,error,reported,output=self.exercise(source_head='0136_category_names_en')
         self.assertIsNone(error)
@@ -263,8 +271,8 @@ class RehearsalTests(unittest.TestCase):
                     ('products', 'idempotent'), ('categories', 'idempotent')]
         self.assertEqual(observed['english_calls'], expected)
         metadata = observed['metadata']
-        self.assertEqual(metadata['head'], '0137_shop_online_payment')
-        self.assertEqual(set(metadata['archives']), {'production-0134.dump', 'upgraded-0137.dump'})
+        self.assertEqual(metadata['head'], '0138_shop_content_en')
+        self.assertEqual(set(metadata['archives']), {'production-0134.dump', 'upgraded-0138.dump'})
         english = metadata['english_backfill']
         self.assertEqual(english['counts'], dict(products=552, categories=44))
         self.assertEqual(english['input_sha256'], observed['hashes'])
