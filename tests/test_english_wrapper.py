@@ -12,7 +12,7 @@ PIN = 'ghcr.io/mharnichev/sc-be/api@sha256:'+'a'*64
 
 
 class EnglishWrapperTests(unittest.TestCase):
-    def exercise(self, mode='apply', failure=None):
+    def exercise(self, mode='apply', failure=None, recovery=False):
         with tempfile.TemporaryDirectory(prefix='english-wrapper-') as directory:
             app = Path(directory)
             release = app/'releases/candidate'
@@ -52,8 +52,16 @@ raise SystemExit(73 if 'up' in sys.argv and os.environ.get('FAIL_UP') else 0)
             if failure:
                 env[failure] = '1'
             source = (ROOT/'scripts/run-english-backfill.sh').read_text().replace('APP_DIR=/opt/soulcuts\n','APP_DIR='+directory+'\n')
-            result = subprocess.run(['bash','-s','--',mode,'fixture-input','b'*64,'c'*64],
-                                    input=source,text=True,capture_output=True,env=env,timeout=15)
+            tools = scripts
+            if recovery:
+                tools = app/'backups/reviewed-recovery-tools'
+                tools.mkdir(parents=True,mode=0o700)
+                (tools/'apply-english-backfill.py').write_bytes((scripts/'apply-english-backfill.py').read_bytes())
+                (scripts/'apply-english-backfill.py').write_text('raise SystemExit(86)\n')
+            wrapper = tools/'run-english-backfill.sh'
+            wrapper.write_text(source)
+            result = subprocess.run(['bash',str(wrapper),mode,'fixture-input','b'*64,'c'*64],
+                                    text=True,capture_output=True,env=env,timeout=15)
             calls = [json.loads(line) for line in (app/'calls.jsonl').read_text().splitlines()] if (app/'calls.jsonl').exists() else []
             return result, calls, (app/'backend-recovery-required').exists(), (app/'english-backfill-required').exists(), (app/'finalized.json').exists()
 
@@ -82,6 +90,14 @@ raise SystemExit(73 if 'up' in sys.argv and os.environ.get('FAIL_UP') else 0)
         self.assertTrue(calls)
         self.assertTrue(all('up' not in call['args'] for call in calls))
         self.assertIn('stop',calls[-1]['args'])
+
+    def test_private_recovery_pair_uses_new_operator_bound_to_pending_release(self):
+        result,calls,backend,english,_ = self.exercise(recovery=True)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertTrue(backend and english)
+        self.assertEqual(len(calls),2)
+        self.assertTrue(all(call['pin']==PIN for call in calls))
+        self.assertIn('up',calls[-1]['args'])
 
     def test_helper_and_partial_restart_failure_stop_both_and_retain_fences(self):
         for failure,code in (('HELPER_FAIL',11),('FAIL_UP',73)):

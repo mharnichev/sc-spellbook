@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 umask 077
 APP_DIR=/opt/soulcuts
+TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="${EXPECTED_RELEASE:?Exact pending release is required}"
 MODE="${1:?English operation is required}"
 case "${MODE}" in apply|reconcile|rollback|recover-finalize|finalize) ;; *) exit 1 ;; esac
@@ -52,7 +53,8 @@ STARTED=true
 if [[ "${MODE}" != finalize ]]; then
   compose stop --timeout 90 backend booking-sms-reminders
 fi
-python3 "${ROOT_DIR}/scripts/apply-english-backfill.py" "$@"
+# Recovery may use a reviewed wrapper/operator pair without mutating a pending release.
+python3 "${TOOLS_DIR}/apply-english-backfill.py" "$@"
 if [[ "${MODE}" == apply || "${MODE}" == reconcile || "${MODE}" == recover-finalize ]]; then
   python3 - "${APP_DIR}" "${ROOT_DIR}" "${MODE}" "${2:-}" <<'PY'
 import hashlib,json,sys

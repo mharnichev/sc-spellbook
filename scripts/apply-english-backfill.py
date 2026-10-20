@@ -206,6 +206,7 @@ def main():
                 '--network','container:'+cid('postgres'),'--memory=768m','--cpus=1','--pids-limit=128',
                 '--user',str(os.geteuid())+':'+str(os.getegid()),
                 '--env-file',str(ENV),'--env-file',str(APP/'env/postgres.env'),
+                '-e','POSTGRES_HOST=postgres','-e','POSTGRES_PORT=5432',
                 '-e','APP_ENV=production','-e','DEBUG=false',
                 '-e','CORS_ORIGINS=https://soulcuts.com.ua,https://www.soulcuts.com.ua,https://admin.soulcuts.com.ua',
                 '-e','BACKGROUND_WORKERS_ENABLED=false',
