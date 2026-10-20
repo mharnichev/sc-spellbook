@@ -24,7 +24,7 @@ jobs:
 
       - name: Validate backup and deployment safeguards
         run: |
-          for script in scripts/deploy.sh scripts/restore-db.sh scripts/backup-db.sh scripts/backup-files.sh scripts/release-lock.sh scripts/verify-background-owner.sh scripts/accept-shop-pilot.sh scripts/rollback.sh scripts/run-english-backfill.sh; do
+          for script in scripts/deploy.sh scripts/restore-db.sh scripts/backup-db.sh scripts/backup-files.sh scripts/release-lock.sh scripts/verify-background-owner.sh scripts/accept-shop-pilot.sh scripts/rollback.sh scripts/run-english-backfill.sh scripts/run-shop-online-activation.sh; do
             bash -n "$script"
           done
           sh -n examples/backend/start.sh examples/backend/start-production.sh

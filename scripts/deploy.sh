@@ -63,9 +63,10 @@ compose --profile release run --rm --no-deps --entrypoint python migrate -c \
     import app.services.mono_checkbox_poll
     import app.utils.backfill_product_names_en
     import app.utils.backfill_category_names_en
+    import app.services.shop_online_payment
     from alembic.config import Config
     from alembic.script import ScriptDirectory
-    if ScriptDirectory.from_config(Config("alembic.ini")).get_heads() != ["0136_category_names_en"]:
+    if ScriptDirectory.from_config(Config("alembic.ini")).get_heads() != ["0137_shop_online_payment"]:
         raise RuntimeError("Unexpected migration head")
 except Exception:
     raise SystemExit("Backend release preflight failed: settings, modules or schema contract unavailable") from None'
