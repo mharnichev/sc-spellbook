@@ -48,22 +48,26 @@ class EnglishRehearsalTests(unittest.TestCase):
             with patch.object(MODULE, 'Path', side_effect=fake_path), self.assertRaisesRegex(RuntimeError, 'checksum'):
                 MODULE.seal_english_inputs(inputs, dict(hashes, products='0'*64), rejected)
 
-    def exercise_backfill(self, *, wrong_status=False, wrong_hash=False, unsafe_mode=False, wrong_counts=False):
+    def exercise_backfill(self, *, wrong_status=False, wrong_hash=False, unsafe_mode=False, wrong_counts=False,
+                          definitions=MODULE.ENGLISH_INPUTS):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             inputs = root/'inputs'
             inputs.mkdir()
             hashes = {}
-            for kind, name, _, _ in MODULE.ENGLISH_INPUTS:
-                (inputs/name).write_bytes(kind.encode())
-                hashes[kind] = hashlib.sha256(kind.encode()).hexdigest()
+            for kind, name, _, _ in definitions:
+                data = kind.encode()
+                if definitions == MODULE.CONTENT_INPUTS:
+                    data = json.dumps({'products': [dict(id=i, translations=dict.fromkeys(MODULE.CONTENT_FIELDS, 'English')) for i in range(228)]}).encode()
+                (inputs/name).write_bytes(data)
+                hashes[kind] = hashlib.sha256(data).hexdigest()
             calls = []
 
             def execute(command):
                 calls.append(command)
                 name = command[command.index('--report')+1].split('/')[-1]
                 kind, phase = name.removesuffix('.json').split('-', 1)
-                count = {'products':552, 'categories':44}[kind]
+                count = next(item[3] for item in definitions if item[0] == kind)
                 report = dict(status='prepared_apply' if phase == 'apply' else 'dry_run', count=count,
                               input_sha256='0'*64 if wrong_hash else hashes[kind])
                 fd = os.open(root/'english-reports'/name, os.O_WRONLY|os.O_CREAT|os.O_EXCL,
@@ -80,11 +84,18 @@ class EnglishRehearsalTests(unittest.TestCase):
 
             def sql(database, query):
                 self.assertEqual(database, 'upgrade_copy')
+                if definitions == MODULE.CONTENT_INPUTS:
+                    if query == MODULE.CONTENT_VECTOR_SQL:
+                        value = 'English' if calls else None
+                        return json.dumps([dict(id=i, **dict.fromkeys(MODULE.CONTENT_FIELDS, value)) for i in range(228)])
+                    self.assertEqual(query, 'SELECT count(*) FROM categories WHERE description_en IS NOT NULL')
+                    return '0'
                 self.assertEqual(query, MODULE.ENGLISH_COUNTS_SQL)
                 return json.dumps(dict(products=551 if wrong_counts else 552, categories=44))
 
             result = MODULE.rehearse_english(execute, sql, 'pinned-candidate', 'internal-fixture-network',
-                                             root/'copy.env', 'private-run', root, inputs, hashes)
+                                             root/'copy.env', 'private-run', root, inputs, hashes,
+                                             definitions=definitions)
             return calls, result
 
     def test_both_dry_runs_precede_separate_applies_and_idempotent_checks(self):
@@ -115,3 +126,20 @@ class EnglishRehearsalTests(unittest.TestCase):
         result = subprocess.run(args, text=True, capture_output=True)
         self.assertEqual(result.returncode, 2)
         self.assertIn('requires all reviewed input arguments', result.stderr)
+
+    def test_content_uses_only_reviewed_module_and_one_atomic_apply(self):
+        calls, result = self.exercise_backfill(definitions=MODULE.CONTENT_INPUTS)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(sum('--apply' in call for call in calls), 1)
+        for call in calls:
+            self.assertEqual(call[call.index('-m')+1], 'app.utils.backfill_shop_content_en')
+            self.assertTrue(call[call.index('--input')+1].endswith('/prod-public-dynamic-en.json'))
+        self.assertEqual(result['transactions'], 'one atomic product content transaction')
+
+    def test_content_requires_exact_137_and_pinned_hash_before_io(self):
+        args = [sys.executable, str(SCRIPT), '--candidate', 'candidate', '--previous', 'previous',
+                '--postgres-image', 'postgres', '--confirm-production-copy',
+                '--content-input-dir', '/not-accessed', '--content-sha256', MODULE.CONTENT_SHA256]
+        result = subprocess.run(args, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('explicit source head 0137', result.stderr)

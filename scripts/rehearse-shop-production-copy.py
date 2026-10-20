@@ -15,9 +15,9 @@ import subprocess
 import uuid
 
 
-HEAD = "0137_shop_online_payment"
+HEAD = "0138_shop_content_en"
 BASE = "0110_nova_poshta_directory"
-SOURCE_HEADS = (BASE, "0129_shop_ingress_limits", "0134_shop_canonical_collation", "0136_category_names_en")
+SOURCE_HEADS = (BASE, "0129_shop_ingress_limits", "0134_shop_canonical_collation", "0136_category_names_en", "0137_shop_online_payment")
 
 
 def source_archive_name(head):
@@ -41,12 +41,18 @@ ENGLISH_INPUTS = (
     ('products', 'prod-all-names-en.json', 'app.utils.backfill_product_names_en', 552),
     ('categories', 'prod-all-category-names-en.json', 'app.utils.backfill_category_names_en', 44),
 )
+CONTENT_INPUTS = (
+    ('products', 'prod-public-dynamic-en.json', 'app.utils.backfill_shop_content_en', 228),
+)
+CONTENT_SHA256 = '992d43055f3266de376be3b85085078633c4b68c4c7412fba4681a155bd1110a'
+CONTENT_FIELDS = ('description_en', 'short_description_en', 'ingredients_en')
+CONTENT_VECTOR_SQL = "SELECT coalesce(json_agg(t ORDER BY id),'[]') FROM (SELECT id, description_en, short_description_en, ingredients_en FROM products) t"
 ENGLISH_COUNTS_SQL = """SELECT json_build_object(
  'products',(SELECT count(*) FROM products WHERE name_en IS NOT NULL AND product_type_en IS NOT NULL),
  'categories',(SELECT count(*) FROM categories WHERE name_en IS NOT NULL))"""
 
 
-def seal_english_inputs(directory, hashes, output, *, backup_root=None):
+def seal_english_inputs(directory, hashes, output, *, backup_root=None, definitions=ENGLISH_INPUTS):
     directory = directory.resolve()
     backup_root = Path('/opt/soulcuts/backups') if backup_root is None else backup_root
     if (directory.parent != backup_root.resolve() or directory.stat().st_uid != os.geteuid()
@@ -55,7 +61,7 @@ def seal_english_inputs(directory, hashes, output, *, backup_root=None):
     sealed = output / 'reviewed-inputs'
     sealed.mkdir(mode=0o700)
     result = {}
-    for kind, name, _, count in ENGLISH_INPUTS:
+    for kind, name, _, count in definitions:
         path = directory / name
         if path.is_symlink() or not path.is_file() or path.stat().st_mode & 0o077:
             raise RuntimeError('English input must be a private regular file')
@@ -86,7 +92,22 @@ def seal_english_inputs(directory, hashes, output, *, backup_root=None):
     return sealed, result
 
 
-def rehearse_english(execute, sql, candidate, network, env, run, output, inputs, hashes):
+def rehearse_english(execute, sql, candidate, network, env, run, output, inputs, hashes,
+                     *, definitions=ENGLISH_INPUTS):
+    content_target = None
+    if definitions == CONTENT_INPUTS:
+        baseline = json.loads(sql('upgrade_copy', CONTENT_VECTOR_SQL))
+        if any(row[field] is not None for row in baseline for field in CONTENT_FIELDS):
+            raise RuntimeError('New content migration unexpectedly populated English fields')
+        content_target = {row['id']: row for row in baseline}
+        reviewed = json.loads((inputs/CONTENT_INPUTS[0][1]).read_bytes())
+        rows = reviewed['products']
+        if len({row['id'] for row in rows}) != 228:
+            raise RuntimeError('Duplicate reviewed content identities')
+        for row in rows:
+            if row['id'] not in content_target or set(row['translations']) != set(CONTENT_FIELDS):
+                raise RuntimeError('Content target differs from the reviewed catalog')
+            content_target[row['id']].update(row['translations'])
     reports = output/'english-reports'
     reports.mkdir(mode=0o700)
     fd = os.open(output, os.O_RDONLY)
@@ -97,7 +118,7 @@ def rehearse_english(execute, sql, candidate, network, env, run, output, inputs,
     summaries = {}
     # Two separate transactions, never presented as one combined atomic update.
     for phase in ('dry-run', 'apply', 'idempotent'):
-        for kind, name, module, count in ENGLISH_INPUTS:
+        for kind, name, module, count in definitions:
             if hashlib.sha256((inputs/name).read_bytes()).hexdigest() != hashes[kind]:
                 raise RuntimeError('Sealed English input drifted')
             report_name = kind+'-'+phase+'.json'
@@ -124,6 +145,14 @@ def rehearse_english(execute, sql, candidate, network, env, run, output, inputs,
                     or report.get('status') != ('prepared_apply' if phase == 'apply' else 'dry_run')):
                 raise RuntimeError('English rollback report contract differs')
             summaries[kind+'-'+phase] = summary
+    if definitions == CONTENT_INPUTS:
+        actual = json.loads(sql('upgrade_copy', CONTENT_VECTOR_SQL))
+        if actual != sorted(content_target.values(), key=lambda row: row['id']):
+            raise RuntimeError('Applied English content differs from the complete reviewed vector')
+        if sql('upgrade_copy', 'SELECT count(*) FROM categories WHERE description_en IS NOT NULL') != '0':
+            raise RuntimeError('Unreviewed category content changed')
+        return dict(summaries=summaries, input_sha256=hashes,
+                    transactions='one atomic product content transaction', full_vector_verified=True)
     counts = json.loads(sql('upgrade_copy', ENGLISH_COUNTS_SQL))
     if counts != {'products':552, 'categories':44}:
         raise RuntimeError('English coverage differs from the complete reviewed inputs')
@@ -258,8 +287,14 @@ def main():
     parser.add_argument("--english-input-dir", type=Path)
     parser.add_argument("--english-products-sha256")
     parser.add_argument("--english-categories-sha256")
+    parser.add_argument("--content-input-dir", type=Path)
+    parser.add_argument("--content-sha256")
     parser.add_argument("--confirm-production-copy", action="store_true", required=True)
     args = parser.parse_args()
+    if (args.content_input_dir or args.content_sha256) and (
+            not args.content_input_dir or args.content_sha256 != CONTENT_SHA256
+            or args.source_head != '0137_shop_online_payment' or args.english_input_dir):
+        parser.error('Content rehearsal requires the exact reviewed input and explicit source head 0137')
     english_arguments = (args.english_input_dir, args.english_products_sha256, args.english_categories_sha256)
     if any(english_arguments) and (not all(english_arguments) or args.source_head != '0134_shop_canonical_collation'):
         parser.error('English rehearsal requires all reviewed input arguments and explicit source head 0134')
@@ -279,6 +314,9 @@ def main():
     if args.english_input_dir:
         english_inputs, english_hashes = seal_english_inputs(args.english_input_dir,
             dict(products=args.english_products_sha256, categories=args.english_categories_sha256), output)
+    elif args.content_input_dir:
+        english_inputs, english_hashes = seal_english_inputs(args.content_input_dir,
+            dict(products=args.content_sha256), output, definitions=CONTENT_INPUTS)
     network, postgres = run + "-net", run + "-pg"
     migration_task, compatibility_task = run + "-migration", run + "-compatibility"
     comparison_task = run + "-schema-comparison"
@@ -374,7 +412,8 @@ def main():
         english_result = None
         if english_inputs:
             english_result = rehearse_english(execute, sql, args.candidate, network, env, run,
-                                               output, english_inputs, english_hashes)
+                                               output, english_inputs, english_hashes,
+                                               definitions=CONTENT_INPUTS if args.content_input_dir else ENGLISH_INPUTS)
             if before != snapshot('upgrade_copy', tables):
                 raise RuntimeError('English backfill changed original production columns')
             if after_sequences != sequences('upgrade_copy'):
@@ -388,7 +427,7 @@ def main():
               AND table_name IN (SELECT tablename FROM pg_tables WHERE schemaname='public')
               GROUP BY table_name) s"""))
         upgraded = snapshot("upgrade_copy", upgraded_tables)
-        upgrade_archive = output / "upgraded-0137.dump"
+        upgrade_archive = output / "upgraded-0138.dump"
         dump("upgrade_copy", upgrade_archive)
         sql("postgres", "CREATE DATABASE restore_copy OWNER rehearsal")
         restore("restore_copy", upgrade_archive)
@@ -444,7 +483,8 @@ engine.dispose()
             raise RuntimeError("Private production copy did not stop")
         stopped = True
         report = dict(candidate=args.candidate, previous=args.previous, postgres=args.postgres_image, **source, head=HEAD,
-                      english_backfill=english_result,
+                      english_backfill=None if args.content_input_dir else english_result,
+                      content_backfill=english_result if args.content_input_dir else None,
                       existing_rows_unchanged=True, existing_sequences_unchanged=True,
                       restored_rows_equal=True, restored_sequences_equal=True, restored_schema_equal_after_finite_contract=True,
                       raw_schema_equal=raw_schema_equal,

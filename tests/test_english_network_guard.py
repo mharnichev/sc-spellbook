@@ -91,6 +91,8 @@ class EnglishNetworkGuardTests(unittest.TestCase):
     def test_reviewed_drivers_normalize_before_each_allowed_tool(self):
         tools = (['-m', 'app.utils.backfill_product_names_en', '--dry-run'],
                  ['-m', 'app.utils.backfill_category_names_en', '--dry-run'],
+                 ['-m', 'app.utils.backfill_shop_content_en', '--dry-run'],
+                 ['/release-tools/scripts/shop-content-backfill-db.py', 'verify'],
                  ['/release-tools/scripts/english-backfill-db.py', 'verify'])
         for driver in ('postgresql+asyncpg', 'postgresql+psycopg2'):
             for host in ('postgres', '127.0.0.1', '::1'):
@@ -118,6 +120,30 @@ class EnglishNetworkGuardTests(unittest.TestCase):
             state.make_url.assert_not_called()
             state.run_module.assert_not_called()
             state.run_path.assert_not_called()
+
+    def test_content_entrypoints_preserve_all_route_refusals(self):
+        for args in (['-m', 'app.utils.backfill_shop_content_en', '--apply'],
+                     ['/release-tools/scripts/shop-content-backfill-db.py', 'rollback']):
+            for overrides in ({'drivername': 'postgresql+psycopg'},
+                              {'host': 'foreign'}, {'port': 6543},
+                              {'query': {'hostaddr': '192.0.2.1'}},
+                              {'query': {'service': 'foreign'}}):
+                with self.subTest(args=args, overrides=overrides):
+                    self.assert_refused(args=args, overrides=overrides)
+            for key in ('PGHOSTADDR', 'PGSERVICE', 'PGSERVICEFILE'):
+                with self.subTest(args=args, variable=key):
+                    self.assert_refused(args=args, environment={key: 'foreign'})
+
+    def test_content_near_misses_refuse_before_configuration(self):
+        for args in (['-m', 'app.utils.backfill_shop_content_en.extra'],
+                     ['/release-tools/scripts/../scripts/shop-content-backfill-db.py'],
+                     ['/tmp/shop-content-backfill-db.py']):
+            with self.subTest(args=args), self.invocation(args=args) as state:
+                with self.assertRaisesRegex(RuntimeError, 'Unreviewed database tool'):
+                    MODULE.main()
+                state.make_url.assert_not_called()
+                state.run_module.assert_not_called()
+                state.run_path.assert_not_called()
 
     def test_only_postgres_loopback_reaches_native_python_connect(self):
         with patch.object(socket.socket,'connect',return_value=None) as native, \
