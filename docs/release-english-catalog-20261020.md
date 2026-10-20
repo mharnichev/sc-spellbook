@@ -62,3 +62,17 @@ idempotent `finalize`, then normal backend acceptance. Preserve the receipt.
 
 Schema downgrade removes the new translation columns; it is not data recovery.
 Do not create orders, invoices, receipts, shipments, OTP or notifications for tests.
+
+Direct Docker database tools must explicitly reproduce Compose's internal
+`POSTGRES_HOST=postgres` and `POSTGRES_PORT=5432` process overrides. Host-facing
+dotenv values are not the container database authority; never relax the network
+guard to accept them or change production env files to accommodate a one-shot.
+If failure occurs before the snapshot or any apply, confirm zero English writes,
+no surviving owned tasks and no English fence before restoring the same pinned
+writers under the release lock; retain the backend acceptance fence.
+For an already pending immutable release, a reviewed, exact-hash operator hotfix
+with green CI may be executed from a private recovery-tools directory under the
+owning release lock, still binding the original pending release/image. Do not
+overwrite release files. Preserve the same writer stop, env verification, failure
+cleanup, runtime verification and acceptance protocol. Publish the infrastructure
+hotfix only after the pending release has been accepted normally.
