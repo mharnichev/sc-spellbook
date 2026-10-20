@@ -13,6 +13,7 @@ fi
 [[ -f "${MARKER}" ]] && grep -Fxq "release=${ROOT_DIR}" "${MARKER}"
 grep -Fxq 'phase=pending_acceptance' "${MARKER}" || { echo 'Release has not reached pending acceptance.' >&2; exit 1; }
 [[ ! -e "${APP_DIR}/master-qr-activation-required" ]] || { echo 'Master QR activation must be finalized or recovered before infrastructure acceptance.' >&2; exit 1; }
+[[ ! -e "${APP_DIR}/english-backfill-required" && ! -L "${APP_DIR}/english-backfill-required" ]] || { echo 'English backfill must be finalized or recovered before infrastructure acceptance.' >&2; exit 1; }
 bash "${ROOT_DIR}/scripts/verify-background-owner.sh"
 python3 "${ROOT_DIR}/scripts/verify-deployed-images.py"
 ln -sfn "${ROOT_DIR}" "${APP_DIR}/current"

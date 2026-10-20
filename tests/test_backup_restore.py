@@ -314,6 +314,23 @@ class BackupRestoreTests(unittest.TestCase):
         self.assertFalse(self.calls.exists())
         self.assertTrue((self.path / 'backend-recovery-required').exists())
 
+    def test_pending_or_dangling_english_fence_blocks_acceptance(self):
+        self.prepare_deploy()
+        (self.path/'backend-recovery-required').write_text(f'release={self.release_root}\nphase=pending_acceptance\n')
+        self.env.update(PILOT_MANUAL_GATE='verified', EXPECTED_RELEASE=str(self.release_root))
+        marker = self.path/'english-backfill-required'
+        for symlink in (False, True):
+            with self.subTest(symlink=symlink):
+                if symlink:
+                    marker.symlink_to(self.path/'missing-private-target')
+                else:
+                    marker.write_text('private recovery state')
+                self.assertNotEqual(self.run_script('accept-shop-pilot.sh').returncode, 0)
+                self.assertFalse(self.calls.exists())
+                self.assertTrue((self.path/'backend-recovery-required').exists())
+                self.assertEqual((self.path/'current').resolve(), self.previous.resolve())
+                marker.unlink()
+
     def test_wrong_deployed_image_or_lookup_failure_never_accepts_or_leaks_errors(self):
         self.prepare_deploy()
         (self.path / 'backend-recovery-required').write_text(f'release={self.release_root}\nphase=pending_acceptance\n')
@@ -354,7 +371,9 @@ class BackupRestoreTests(unittest.TestCase):
         self.assertIn('Settings()', code)
         self.assertIn('import app.services.master_mono', code)
         self.assertIn('import app.services.mono_checkbox_poll', code)
-        self.assertIn('["0134_shop_canonical_collation"]', code)
+        self.assertIn('["0136_category_names_en"]', code)
+        self.assertIn('import app.utils.backfill_product_names_en', code)
+        self.assertIn('import app.utils.backfill_category_names_en', code)
         harness = '''import builtins
 original_import = builtins.__import__
 def guarded_import(name, *args, **kwargs):
