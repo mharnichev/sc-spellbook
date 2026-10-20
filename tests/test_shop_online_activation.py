@@ -219,6 +219,55 @@ class ShopOnlineActivationTests(unittest.TestCase):
                 f.invoke('apply')
             self.assertEqual(f.env.read_bytes(), f.before)
 
+    def test_reconcile_retries_environment_durability_before_restart_ack(self):
+        with tempfile.TemporaryDirectory() as directory:
+            f = Fixture(directory)
+            native = OP.sync_dir
+            def failed(path):
+                if path == f.env.parent:
+                    raise OSError('environment directory fsync failed after rename')
+                return native(path)
+            with patch.object(OP, 'sync_dir', side_effect=failed), self.assertRaises(OSError):
+                f.invoke('apply')
+            self.assertNotEqual(f.env.read_bytes(), f.before)
+            self.assertEqual(json.loads(f.marker.read_text())['phase'], 'prepared')
+            with patch.object(OP, 'resync', side_effect=OSError('environment retry fsync failed')) as synced:
+                with self.assertRaises(OSError):
+                    f.invoke('reconcile')
+                synced.assert_called_once_with(f.env)
+            self.assertTrue(f.marker.exists())
+            self.assertFalse(json.loads(f.marker.read_text())['pre_restart_original_verified'])
+            with patch.object(OP, 'resync', wraps=OP.resync) as synced:
+                f.invoke('reconcile')
+                synced.assert_called_once_with(f.env)
+            self.assertTrue(json.loads(f.marker.read_text())['pre_restart_original_verified'])
+
+    def test_rollback_retries_matching_original_durability_before_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            f = Fixture(directory)
+            f.invoke('apply')
+            native = OP.sync_dir
+            def failed(path):
+                if path == f.env.parent:
+                    raise OSError('rollback environment directory fsync failed after rename')
+                return native(path)
+            with patch.object(OP, 'sync_dir', side_effect=failed), self.assertRaises(OSError):
+                f.invoke('rollback')
+            self.assertEqual(f.env.read_bytes(), f.before)
+            self.assertTrue(f.marker.exists())
+            self.assertFalse((f.report/'rolled-back.json').exists())
+            with patch.object(OP, 'resync', side_effect=OSError('rollback retry fsync failed')) as synced:
+                with self.assertRaises(OSError):
+                    f.invoke('rollback')
+                synced.assert_called_once_with(f.env)
+            self.assertTrue(f.marker.exists())
+            self.assertFalse((f.report/'rolled-back.json').exists())
+            with patch.object(OP, 'resync', wraps=OP.resync) as synced:
+                f.invoke('rollback')
+                synced.assert_called_once_with(f.env)
+            self.assertFalse(f.marker.exists())
+            self.assertTrue((f.app/'backend-recovery-required').exists())
+
     def test_failed_existing_receipt_resync_never_unlinks_fence(self):
         with tempfile.TemporaryDirectory() as directory:
             f = Fixture(directory)
@@ -231,8 +280,16 @@ class ShopOnlineActivationTests(unittest.TestCase):
             with patch.object(OP, 'persist', side_effect=failed), self.assertRaises(OSError):
                 f.invoke('finalize', runtime=True)
             self.assertTrue(f.marker.exists())
-            with patch.object(OP, 'resync', side_effect=OSError('retry fsync failure')), self.assertRaises(OSError):
-                f.invoke('finalize', runtime=True)
+            native_resync = OP.resync
+            def failed_receipt_resync(path):
+                if path == f.report/'finalized.json':
+                    raise OSError('receipt retry fsync failure')
+                return native_resync(path)
+            with patch.object(OP, 'resync', side_effect=failed_receipt_resync) as synced:
+                with self.assertRaisesRegex(OSError, 'receipt retry fsync failure'):
+                    f.invoke('finalize', runtime=True)
+                self.assertEqual([call.args[0] for call in synced.call_args_list],
+                                 [f.env, f.report/'finalized.json'])
             self.assertTrue(f.marker.exists())
             f.invoke('finalize', runtime=True)
             self.assertFalse(f.marker.exists())

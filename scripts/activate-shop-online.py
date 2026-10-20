@@ -401,6 +401,7 @@ def main():
             verify_db(db_snapshot(operator_id), baseline)
             if actual != original:
                 persist_bytes(env, original, replace=True)
+            resync(env)
             verify_db(db_snapshot(operator_id), baseline)
             require(read_private(env) == original)
             rollback_path = report/'rolled-back.json'
@@ -415,6 +416,7 @@ def main():
                 sync_dir(APP)
         else:
             require(actual == staged, 'Environment drift; manual review required')
+            resync(env)
             verify_config(env)
             live = mode in ('recover-finalize', 'finalize')
             if live:
