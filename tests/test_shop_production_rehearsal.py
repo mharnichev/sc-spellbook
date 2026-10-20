@@ -60,7 +60,9 @@ class RehearsalTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             MODULE.verify_raw_schema(b'CREATE TABLE x(id integer);', b'CREATE TABLE x(id text);', [], {}, {}, {}, {})
 
-    def exercise(self, *, stop_fails=False, row_drift=False, no_space=False):
+    def exercise(self, *, stop_fails=False, row_drift=False, no_space=False,
+                 source_head=None, restored_head=None, locale='en_US.utf8'):
+        expected_head = source_head or MODULE.BASE
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / 'backups').mkdir()
@@ -90,7 +92,10 @@ class RehearsalTests(unittest.TestCase):
                     elif 'pg_get_constraintdef(oid,false)' in query:
                         value = b'{}'
                     elif 'version_num' in query:
-                        value = (MODULE.HEAD if migrated else MODULE.BASE).encode()
+                        value = (MODULE.HEAD if migrated else (restored_head or expected_head)).encode()
+                    elif query in ('SELECT datcollate FROM pg_database WHERE datname=current_database()',
+                                   'SELECT datctype FROM pg_database WHERE datname=current_database()'):
+                        value = locale.encode()
                     elif 'json_object_agg' in query:
                         value = b'{"customers":["id"]}'
                     elif 'json_agg(s ORDER BY name)' in query:
@@ -118,6 +123,8 @@ class RehearsalTests(unittest.TestCase):
             argv = [str(SCRIPT), '--candidate', 'ghcr.io/mharnichev/sc-be/api@sha256:' + 'a' * 64,
                     '--previous', 'ghcr.io/mharnichev/sc-be/api@sha256:' + 'b' * 64,
                     '--postgres-image', 'postgres@sha256:' + 'c' * 64, '--confirm-production-copy']
+            if source_head:
+                argv += ['--source-head', source_head]
             output, error = io.StringIO(), None
             old_umask = os.umask(0o077)
             try:
@@ -132,6 +139,12 @@ class RehearsalTests(unittest.TestCase):
             finally:
                 os.umask(old_umask)
             report = list((root / 'backups').glob('*/result.json'))
+            if report:
+                metadata = json.loads(report[0].read_text())
+                self.assertEqual(metadata['source_head'], expected_head)
+                self.assertEqual(metadata['source_collation'], locale)
+                self.assertEqual(metadata['source_ctype'], locale)
+                self.assertIn('production-' + expected_head[:4] + '.dump', metadata['archives'])
             for path in (root / 'backups').glob('*/*'):
                 self.assertEqual(path.stat().st_mode & 0o777, 0o600)
             return calls, error, bool(report), output.getvalue()
@@ -156,6 +169,20 @@ class RehearsalTests(unittest.TestCase):
         self.assertIn('private copy stop failed', error)
         self.assertFalse(reported)
         self.assertNotIn('passed', output)
+
+    def test_current_production_copy_keeps_explicit_source_in_archive_and_report(self):
+        _, error, reported, _ = self.exercise(source_head='0129_shop_ingress_limits')
+        self.assertIsNone(error)
+        self.assertTrue(reported)
+
+    def test_restored_head_or_locale_mismatch_stops_without_migration(self):
+        for options in (dict(restored_head=MODULE.BASE), dict(locale='C')):
+            with self.subTest(options=options):
+                calls, error, reported, _ = self.exercise(source_head='0129_shop_ingress_limits', **options)
+                self.assertIn('reviewed production', error)
+                self.assertFalse(reported)
+                self.assertFalse(any(call[-2:] == ['upgrade', 'head'] for call in calls))
+                self.assertTrue(any(call[:2] == ['docker', 'stop'] for call in calls))
 
     def test_changed_rows_stop_the_copy_and_fail_acceptance(self):
         calls, error, reported, _ = self.exercise(row_drift=True)

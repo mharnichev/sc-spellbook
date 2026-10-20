@@ -2,6 +2,7 @@
 """Rehearse an upgrade on an isolated, private production copy, never in place."""
 import argparse
 import hashlib
+import inspect
 import json
 import os
 from pathlib import Path
@@ -13,8 +14,27 @@ import subprocess
 import uuid
 
 
-HEAD = "0129_shop_ingress_limits"
+HEAD = "0134_shop_canonical_collation"
 BASE = "0110_nova_poshta_directory"
+
+
+def source_archive_name(head):
+    if head not in (BASE, "0129_shop_ingress_limits"):
+        raise RuntimeError("Unreviewed source baseline")
+    return "production-" + head.split("_", 1)[0] + ".dump"
+
+
+def verify_source_copy(sql, expected):
+    actual = sql("upgrade_copy", "SELECT version_num FROM alembic_version")
+    if actual != expected:
+        raise RuntimeError("Source copy is not the reviewed production baseline")
+    collation = sql("upgrade_copy", "SELECT datcollate FROM pg_database WHERE datname=current_database()")
+    ctype = sql("upgrade_copy", "SELECT datctype FROM pg_database WHERE datname=current_database()")
+    if collation != "en_US.utf8" or ctype != "en_US.utf8":
+        raise RuntimeError("Source copy does not match the reviewed production locale")
+    return dict(source_head=actual, source_collation=collation, source_ctype=ctype)
+
+
 SCHEMA_SQL = """SELECT jsonb_build_object(
  'constraints',(SELECT COALESCE(jsonb_agg(jsonb_build_array(c.conrelid::regclass::text,c.conname,c.contype,pg_get_constraintdef(c.oid,true),c.condeferrable,c.condeferred,c.convalidated) ORDER BY c.conrelid::regclass::text,c.conname),'[]'::jsonb) FROM pg_constraint c WHERE c.connamespace='public'::regnamespace),
  'triggers',(SELECT COALESCE(jsonb_agg(jsonb_build_array(c.relname,t.tgname,pg_get_triggerdef(t.oid,true),t.tgenabled) ORDER BY c.relname,t.tgname),'[]'::jsonb) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid WHERE c.relnamespace='public'::regnamespace AND NOT t.tgisinternal),
@@ -27,6 +47,35 @@ SCHEMA_SQL = """SELECT jsonb_build_object(
  'extensions',(SELECT jsonb_agg(jsonb_build_array(extname,extversion) ORDER BY extname) FROM pg_extension),
  'unvalidated_constraints',(SELECT count(*) FROM pg_constraint WHERE connamespace='public'::regnamespace AND NOT convalidated),
  'invalid_indexes',(SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid=i.indrelid WHERE c.relnamespace='public'::regnamespace AND NOT i.indisvalid))"""
+def compare_release_schema(source, restored, base_compare, fixture):
+    """Add one audited 0132 PG16 deparse pair, never a SQL normalizer."""
+    from copy import deepcopy
+    from hashlib import sha256
+
+    table = 'mono_checkbox_poll_state'
+    name = 'ck_mono_checkbox_poll_state_mono_checkbox_poll_kind'
+    source_definition = "CHECK (kind::text = ANY (ARRAY['shop'::character varying, 'master'::character varying]::text[]))"
+    restored_definition = "CHECK (kind::text = ANY (ARRAY['shop'::character varying::text, 'master'::character varying::text]))"
+    old = [row for row in source.get('constraints', []) if row[:2] == [table, name]]
+    new = [row for row in restored.get('constraints', []) if row[:2] == [table, name]]
+    if len(old) > 1 or len(new) > 1:
+        raise RuntimeError('Duplicate release constraint identity')
+    working = source
+    accepted = []
+    if old != new:
+        if (len(old) != 1 or len(new) != 1 or len(old[0]) != 7 or len(new[0]) != 7
+                or old[0][2] != 'c' or old[0][:3] + old[0][4:] != new[0][:3] + new[0][4:]
+                or old[0][3] != source_definition or new[0][3] != restored_definition):
+            raise RuntimeError('Unrecognized release constraint difference')
+        working = deepcopy(source)
+        next(row for row in working['constraints'] if row[:2] == [table, name])[3] = restored_definition
+        accepted.append(dict(kind='constraint', table=table, name=name,
+                             source_definition=source_definition, restored_definition=restored_definition,
+                             source_sha256=sha256(source_definition.encode()).hexdigest(),
+                             restored_sha256=sha256(restored_definition.encode()).hexdigest()))
+    return base_compare(working, restored, fixture) + accepted
+
+
 FINITE_COMPARISON = """
 import importlib.util, json, sys
 from pathlib import Path
@@ -35,8 +84,9 @@ module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 fixture = json.loads(Path('/app/scripts/fixtures/shop_restore_pg16_canonicalization.json').read_text())
+""" + inspect.getsource(compare_release_schema) + """
 before, after = json.load(sys.stdin)
-print(json.dumps(module.source_restore_schema_equivalence(before, after, fixture)))
+print(json.dumps(compare_release_schema(before, after, module.source_restore_schema_equivalence, fixture)))
 """
 
 
@@ -108,6 +158,7 @@ def main():
     parser.add_argument("--candidate", required=True)
     parser.add_argument("--previous", required=True)
     parser.add_argument("--postgres-image", required=True)
+    parser.add_argument("--source-head", choices=(BASE, "0129_shop_ingress_limits"), default=BASE)
     parser.add_argument("--confirm-production-copy", action="store_true", required=True)
     args = parser.parse_args()
     for image in (args.candidate, args.previous):
@@ -157,7 +208,7 @@ def main():
         if result.returncode:
             raise RuntimeError("Private copy restore failed")
 
-    archive = output / "production-0110.dump"
+    archive = output / source_archive_name(args.source_head)
     try:
         size = int(execute(["docker", "exec", "soulcuts-postgres-1", "sh", "-ec",
                            'exec psql -X -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT pg_database_size(current_database())"']).strip())
@@ -177,12 +228,12 @@ def main():
                  "--memory=2g", "--cpus=1", "--pids-limit=256",
                  "--tmpfs", "/var/lib/postgresql/data:rw,size=1536m,mode=0700",
                  "-e", "POSTGRES_USER=rehearsal", "-e", "POSTGRES_DB=upgrade_copy",
+                 "-e", "POSTGRES_INITDB_ARGS=--locale=en_US.utf8",
                  "-e", "POSTGRES_HOST_AUTH_METHOD=trust", args.postgres_image])
         execute(["docker", "exec", postgres, "sh", "-ec",
                  'for i in $(seq 1 60); do pg_isready -h 127.0.0.1 -U rehearsal -d upgrade_copy && exit 0; sleep 1; done; exit 1'])
         restore("upgrade_copy", archive)
-        if sql("upgrade_copy", "SELECT version_num FROM alembic_version") != BASE:
-            raise RuntimeError("Source copy is not the reviewed production baseline")
+        source = verify_source_copy(sql, args.source_head)
         tables = json.loads(sql("upgrade_copy", """
             SELECT json_object_agg(table_name, columns) FROM (
               SELECT table_name, json_agg(column_name ORDER BY ordinal_position) AS columns
@@ -216,7 +267,7 @@ def main():
               AND table_name IN (SELECT tablename FROM pg_tables WHERE schemaname='public')
               GROUP BY table_name) s"""))
         upgraded = snapshot("upgrade_copy", upgraded_tables)
-        upgrade_archive = output / "upgraded-0129.dump"
+        upgrade_archive = output / "upgraded-0134.dump"
         dump("upgrade_copy", upgrade_archive)
         sql("postgres", "CREATE DATABASE restore_copy OWNER rehearsal")
         restore("restore_copy", upgrade_archive)
@@ -271,7 +322,7 @@ engine.dispose()
         if execute(["docker", "inspect", "--format", "{{.State.Running}}", postgres]).strip() != b'false':
             raise RuntimeError("Private production copy did not stop")
         stopped = True
-        report = dict(candidate=args.candidate, previous=args.previous, postgres=args.postgres_image, source_head=BASE, head=HEAD,
+        report = dict(candidate=args.candidate, previous=args.previous, postgres=args.postgres_image, **source, head=HEAD,
                       existing_rows_unchanged=True, existing_sequences_unchanged=True,
                       restored_rows_equal=True, restored_sequences_equal=True, restored_schema_equal_after_finite_contract=True,
                       raw_schema_equal=raw_schema_equal,

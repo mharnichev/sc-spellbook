@@ -59,9 +59,11 @@ compose --profile release run --rm --no-deps --entrypoint python migrate -c \
     import app.core.proxy_trust
     import app.core.migration_readiness
     import app.core.background_workers
+    import app.services.master_mono
+    import app.services.mono_checkbox_poll
     from alembic.config import Config
     from alembic.script import ScriptDirectory
-    if ScriptDirectory.from_config(Config("alembic.ini")).get_heads() != ["0129_shop_ingress_limits"]:
+    if ScriptDirectory.from_config(Config("alembic.ini")).get_heads() != ["0134_shop_canonical_collation"]:
         raise RuntimeError("Unexpected migration head")
 except Exception:
     raise SystemExit("Backend release preflight failed: settings, modules or schema contract unavailable") from None'

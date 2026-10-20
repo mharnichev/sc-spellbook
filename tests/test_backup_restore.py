@@ -295,6 +295,17 @@ class BackupRestoreTests(unittest.TestCase):
         self.assertNotEqual(self.run_script('accept-shop-pilot.sh').returncode, 0)
         self.assertTrue((self.path / 'backend-recovery-required').exists())
 
+    def test_pending_master_qr_activation_blocks_acceptance_before_docker(self):
+        self.prepare_deploy()
+        (self.path/'backend-recovery-required').write_text(f'release={self.release_root}\nphase=pending_acceptance\n')
+        (self.path/'master-qr-activation-required').write_text('private activation marker')
+        self.env.update(PILOT_MANUAL_GATE='verified',EXPECTED_RELEASE=str(self.release_root))
+        result=self.run_script('accept-shop-pilot.sh')
+        self.assertNotEqual(result.returncode,0)
+        self.assertFalse(self.calls.exists())
+        self.assertTrue((self.path/'backend-recovery-required').exists())
+        self.assertTrue((self.path/'master-qr-activation-required').exists())
+
     def test_acceptance_refuses_failed_phase_without_docker_queries(self):
         self.prepare_deploy()
         (self.path / 'backend-recovery-required').write_text(f'release={self.release_root}\nbackup=/missing\n')
@@ -341,6 +352,9 @@ class BackupRestoreTests(unittest.TestCase):
         code = call[-1]
         self.assertIn('from app.core.config import Settings', code)
         self.assertIn('Settings()', code)
+        self.assertIn('import app.services.master_mono', code)
+        self.assertIn('import app.services.mono_checkbox_poll', code)
+        self.assertIn('["0134_shop_canonical_collation"]', code)
         harness = '''import builtins
 original_import = builtins.__import__
 def guarded_import(name, *args, **kwargs):
