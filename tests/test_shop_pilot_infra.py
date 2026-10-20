@@ -172,6 +172,25 @@ class ComposeTests(unittest.TestCase):
         self.assertEqual(migration['profiles'], ['release'])
         self.assertNotIn('volumes', migration)
 
+    def test_reviewed_shop_payment_switches_inherit_backend_env_without_opening_checkout(self):
+        enabled = ('SHOP_ORDER_OPERATIONS_ENABLED', 'SHOP_PAYMENTS_ENABLED',
+                   'SHOP_MONOBANK_LIVE_TRANSPORT_ENABLED')
+        pinned = ('SHOP_CHECKOUT_ENABLED', 'SHOP_CHECKBOX_ENABLED',
+                  'SHOP_CHECKBOX_LIVE_TRANSPORT_ENABLED', 'PROVIDER_SANDBOX_ENABLED')
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'backend.env'
+            contents = (ROOT/'env/backend.env.example').read_text()
+            for key in (*enabled, *pinned):
+                self.assertIn(key+'=false', contents)
+                contents = contents.replace(key+'=false', key+'=true')
+            path.write_text(contents)
+            result = subprocess.run(self.command, env={**self.env, 'BACKEND_ENV_FILE': str(path)},
+                                    capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        actual = json.loads(result.stdout)['services']['backend']['environment']
+        self.assertEqual({key: actual[key] for key in enabled}, dict.fromkeys(enabled, 'true'))
+        self.assertEqual({key: actual[key] for key in pinned}, dict.fromkeys(pinned, 'false'))
+
     def test_all_backend_processes_have_identical_explicit_https_cors(self):
         expected = 'https://soulcuts.com.ua,https://www.soulcuts.com.ua,https://admin.soulcuts.com.ua'
         for service in ('backend', 'migrate', 'booking-sms-reminders'):
