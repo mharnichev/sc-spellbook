@@ -17,7 +17,7 @@ import uuid
 
 HEAD = "0139_shop_input_guards"
 BASE = "0110_nova_poshta_directory"
-SOURCE_HEADS = (BASE, "0129_shop_ingress_limits", "0134_shop_canonical_collation", "0136_category_names_en", "0137_shop_online_payment", "0138_shop_content_en")
+SOURCE_HEADS = (BASE, "0129_shop_ingress_limits", "0134_shop_canonical_collation", "0136_category_names_en", "0137_shop_online_payment", "0138_shop_content_en", HEAD)
 
 
 def source_archive_name(head):
