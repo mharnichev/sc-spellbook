@@ -173,31 +173,35 @@ SCHEMA_SQL = """SELECT jsonb_build_object(
  'unvalidated_constraints',(SELECT count(*) FROM pg_constraint WHERE connamespace='public'::regnamespace AND NOT convalidated),
  'invalid_indexes',(SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid=i.indrelid WHERE c.relnamespace='public'::regnamespace AND NOT i.indisvalid))"""
 def compare_release_schema(source, restored, base_compare, fixture):
-    """Add one audited 0132 PG16 deparse pair, never a SQL normalizer."""
+    """Add exact audited 0132/0139 PG16 deparse pairs, never normalize SQL."""
     from copy import deepcopy
     from hashlib import sha256
 
-    table = 'mono_checkbox_poll_state'
-    name = 'ck_mono_checkbox_poll_state_mono_checkbox_poll_kind'
-    source_definition = "CHECK (kind::text = ANY (ARRAY['shop'::character varying, 'master'::character varying]::text[]))"
-    restored_definition = "CHECK (kind::text = ANY (ARRAY['shop'::character varying::text, 'master'::character varying::text]))"
-    old = [row for row in source.get('constraints', []) if row[:2] == [table, name]]
-    new = [row for row in restored.get('constraints', []) if row[:2] == [table, name]]
-    if len(old) > 1 or len(new) > 1:
-        raise RuntimeError('Duplicate release constraint identity')
-    working = source
+    pairs = [
+        ('mono_checkbox_poll_state', 'ck_mono_checkbox_poll_state_mono_checkbox_poll_kind',
+         "CHECK (kind::text = ANY (ARRAY['shop'::character varying, 'master'::character varying]::text[]))",
+         "CHECK (kind::text = ANY (ARRAY['shop'::character varying::text, 'master'::character varying::text]))"),
+        ('shop_ingress_admissions', 'ck_shop_ingress_admissions_action',
+         "CHECK (action::text = ANY (ARRAY['otp_send'::character varying, 'otp_verify'::character varying, 'checkout'::character varying, 'feedback'::character varying, 'review'::character varying, 'profile'::character varying, 'search'::character varying, 'cart'::character varying]::text[]))",
+         "CHECK (action::text = ANY (ARRAY['otp_send'::character varying::text, 'otp_verify'::character varying::text, 'checkout'::character varying::text, 'feedback'::character varying::text, 'review'::character varying::text, 'profile'::character varying::text, 'search'::character varying::text, 'cart'::character varying::text]))"),
+    ]
+    working = deepcopy(source)
     accepted = []
-    if old != new:
-        if (len(old) != 1 or len(new) != 1 or len(old[0]) != 7 or len(new[0]) != 7
-                or old[0][2] != 'c' or old[0][:3] + old[0][4:] != new[0][:3] + new[0][4:]
-                or old[0][3] != source_definition or new[0][3] != restored_definition):
-            raise RuntimeError('Unrecognized release constraint difference')
-        working = deepcopy(source)
-        next(row for row in working['constraints'] if row[:2] == [table, name])[3] = restored_definition
-        accepted.append(dict(kind='constraint', table=table, name=name,
-                             source_definition=source_definition, restored_definition=restored_definition,
-                             source_sha256=sha256(source_definition.encode()).hexdigest(),
-                             restored_sha256=sha256(restored_definition.encode()).hexdigest()))
+    for table, name, source_definition, restored_definition in pairs:
+        old = [row for row in source.get('constraints', []) if row[:2] == [table, name]]
+        new = [row for row in restored.get('constraints', []) if row[:2] == [table, name]]
+        if len(old) > 1 or len(new) > 1:
+            raise RuntimeError('Duplicate release constraint identity')
+        if old != new:
+            if (len(old) != 1 or len(new) != 1 or len(old[0]) != 7 or len(new[0]) != 7
+                    or old[0][2] != 'c' or old[0][:3] + old[0][4:] != new[0][:3] + new[0][4:]
+                    or old[0][3] != source_definition or new[0][3] != restored_definition):
+                raise RuntimeError('Unrecognized release constraint difference')
+            next(row for row in working['constraints'] if row[:2] == [table, name])[3] = restored_definition
+            accepted.append(dict(kind='constraint', table=table, name=name,
+                                 source_definition=source_definition, restored_definition=restored_definition,
+                                 source_sha256=sha256(source_definition.encode()).hexdigest(),
+                                 restored_sha256=sha256(restored_definition.encode()).hexdigest()))
     return base_compare(working, restored, fixture) + accepted
 
 

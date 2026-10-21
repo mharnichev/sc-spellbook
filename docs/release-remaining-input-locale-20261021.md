@@ -55,6 +55,18 @@ remain unchanged. A read-only preflight found zero production orders/intents,
 so the size cap cannot invalidate a pre-existing accepted Shop retry here.
 This is rollout-specific evidence, not a claim about importing legacy intents.
 
+The first production-copy run stopped at schema comparison, not a production
+migration: native PG16 IN and restored pg_dump expressions deparse their array
+casts differently for the expanded admission CHECK. Both exact raw definitions
+were collected from that copy. A network-none disposable PG16 reproduced those
+bytes and both pretty definitions, accepted the same eight actions and rejected
+three invalid actions. The comparison permits only that exact object/definition
+pair, preserving type/flags/validation, all other schema bytes and the original
+finite comparison. Reverse/near matches, ANY-to-ALL, changed/missing actions,
+duplicate identities and unrelated raw DDL remain rejected. Re-run full tests,
+independent review, exact-head CI and the complete production-copy rehearsal;
+the earlier failure is not successful restore evidence.
+
 Run frontend suites, types/build and offline desktop/mobile browser regressions,
 including checkout/retry/locale/payment-channel/receipt and sandbox boundaries.
 Run backend schema, validation, migration/downgrade/upgrade, source/subject/cart
