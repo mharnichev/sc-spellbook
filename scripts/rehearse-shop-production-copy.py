@@ -15,9 +15,9 @@ import subprocess
 import uuid
 
 
-HEAD = "0138_shop_content_en"
+HEAD = "0139_shop_input_guards"
 BASE = "0110_nova_poshta_directory"
-SOURCE_HEADS = (BASE, "0129_shop_ingress_limits", "0134_shop_canonical_collation", "0136_category_names_en", "0137_shop_online_payment")
+SOURCE_HEADS = (BASE, "0129_shop_ingress_limits", "0134_shop_canonical_collation", "0136_category_names_en", "0137_shop_online_payment", "0138_shop_content_en")
 
 
 def source_archive_name(head):
@@ -427,7 +427,7 @@ def main():
               AND table_name IN (SELECT tablename FROM pg_tables WHERE schemaname='public')
               GROUP BY table_name) s"""))
         upgraded = snapshot("upgrade_copy", upgraded_tables)
-        upgrade_archive = output / "upgraded-0138.dump"
+        upgrade_archive = output / "upgraded-0139.dump"
         dump("upgrade_copy", upgrade_archive)
         sql("postgres", "CREATE DATABASE restore_copy OWNER rehearsal")
         restore("restore_copy", upgrade_archive)
