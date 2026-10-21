@@ -49,10 +49,13 @@ Read-only production baseline is private under
 `/opt/soulcuts/backups/multiselect-breadcrumbs-20261021-a0uoebse`.
 Before rollout confirm current remains `20261021T130541Z-87c21c7`, schema0139,
 eight services ready and no recovery fences. After rollout verify exact digest
-and source labels, all six protected service identities/start times, every env
+and source labels, all five protected service identities/start times, every env
 file/runtime hash, full552-product fingerprint, 279 original/278 EN ingredient
 counts, zero orders/intents and the closed pilot. Run normal owner/image/SEO
-checks and read-only Chrome catalog/promotion-modal acceptance. Do not save a
+checks and read-only Chrome catalog/promotion-modal acceptance. Caddy may be
+recreated by the existing workflow because its read-only config bind points to
+the new release path; require identical engine, environment and Caddyfile bytes.
+Do not save a
 promotion, send notifications or create orders/payments/checks/shipments for QA.
 
 Retain prior immutable pins and the normal frontend rollback procedure. No DB
