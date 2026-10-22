@@ -388,7 +388,7 @@ class BackupRestoreTests(unittest.TestCase):
         self.assertIn('Settings()', code)
         self.assertIn('import app.services.master_mono', code)
         self.assertIn('import app.services.mono_checkbox_poll', code)
-        self.assertIn('["0139_shop_input_guards"]', code)
+        self.assertIn('["0140_shop_order_receipt_snapshot"]', code)
         self.assertIn('import app.dependencies.shop_input', code)
         self.assertIn('import app.core.shop_request_size', code)
         self.assertIn('import app.utils.backfill_shop_content_en', code)
