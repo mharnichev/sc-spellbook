@@ -416,9 +416,11 @@ class BackupRestoreTests(unittest.TestCase):
         self.assertIn('Settings()', code)
         self.assertIn('import app.services.master_mono', code)
         self.assertIn('import app.services.mono_checkbox_poll', code)
-        self.assertIn('["0140_shop_order_receipt_snapshot"]', code)
+        self.assertIn('["0143_auto_checkout_checkpoint"]', code)
         self.assertIn('import app.dependencies.shop_input', code)
         self.assertIn('import app.core.shop_request_size', code)
+        for module in ('checkout_reminders', 'checkout_reminder_email', 'checkout_reminder_smtp'):
+            self.assertIn('import app.services.' + module, code)
         self.assertIn('import app.utils.backfill_shop_content_en', code)
         self.assertIn('import app.services.shop_online_payment', code)
         self.assertIn('import app.utils.backfill_product_names_en', code)

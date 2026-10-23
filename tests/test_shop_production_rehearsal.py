@@ -20,14 +20,44 @@ SPEC.loader.exec_module(MODULE)
 
 
 class RehearsalTests(unittest.TestCase):
+    def test_checkout_upgrade_validates_prices_and_no_historical_enrollment(self):
+        queries = []
+        def sql(database, query):
+            self.assertEqual(database, 'upgrade_copy')
+            queries.append(query)
+            return '0'
+        self.assertEqual(MODULE.verify_checkout_upgrade(sql, '0140_shop_order_receipt_snapshot'),
+                         dict(rrp_backfill_verified=True, historical_reminders=0))
+        self.assertIn('COALESCE(recommended_retail_price, price)', queries[0])
+        self.assertIn('checkout_reminders', queries[1])
+
+    def test_checkout_upgrade_rejects_price_drift_or_historical_enrollment(self):
+        for replies, message in ((iter(['1']), 'RRP backfill'),
+                                 (iter(['0', '1']), 'historical checkout')):
+            with self.subTest(message=message), self.assertRaisesRegex(RuntimeError, message):
+                MODULE.verify_checkout_upgrade(lambda *_: next(replies), MODULE.BASE)
+
+    def test_repeated_head_does_not_treat_existing_reminders_as_migration_enrollment(self):
+        self.assertIsNone(MODULE.verify_checkout_upgrade(lambda *_: self.fail('unexpected query'), MODULE.HEAD))
+
+    def test_receipt_snapshot_source_upgrades_without_email_activation(self):
+        observed = {}
+        _, error, reported, _ = self.exercise(source_head='0140_shop_order_receipt_snapshot', observed=observed)
+        self.assertIsNone(error)
+        self.assertTrue(reported)
+        self.assertEqual(observed['metadata']['head'], '0143_auto_checkout_checkpoint')
+        self.assertEqual(set(observed['metadata']['archives']),
+                         {'production-0140.dump', 'upgraded-0143.dump'})
+        self.assertEqual(observed['english_calls'], [])
+
     def test_input_guards_source_upgrades_to_receipt_snapshot(self):
         observed = {}
         _, error, reported, _ = self.exercise(source_head='0139_shop_input_guards', observed=observed)
         self.assertIsNone(error)
         self.assertTrue(reported)
-        self.assertEqual(observed['metadata']['head'], '0140_shop_order_receipt_snapshot')
+        self.assertEqual(observed['metadata']['head'], '0143_auto_checkout_checkpoint')
         self.assertEqual(set(observed['metadata']['archives']),
-                         {'production-0139.dump', 'upgraded-0140.dump'})
+                         {'production-0139.dump', 'upgraded-0143.dump'})
         self.assertEqual(observed['english_calls'], [])
 
     def test_input_guards_upgrade_preserves_content_without_reapplying_backfill(self):
@@ -35,8 +65,8 @@ class RehearsalTests(unittest.TestCase):
         calls, error, reported, _ = self.exercise(source_head='0138_shop_content_en', observed=observed)
         self.assertIsNone(error)
         self.assertTrue(reported)
-        self.assertEqual(observed['metadata']['head'], '0140_shop_order_receipt_snapshot')
-        self.assertEqual(set(observed['metadata']['archives']), {'production-0138.dump', 'upgraded-0140.dump'})
+        self.assertEqual(observed['metadata']['head'], '0143_auto_checkout_checkpoint')
+        self.assertEqual(set(observed['metadata']['archives']), {'production-0138.dump', 'upgraded-0143.dump'})
         self.assertEqual(observed['english_calls'], [])
         self.assertFalse(any('-m' in command for command in calls))
 
@@ -45,7 +75,7 @@ class RehearsalTests(unittest.TestCase):
         _, error, reported, _ = self.exercise(source_head='0137_shop_online_payment', observed=observed)
         self.assertIsNone(error)
         self.assertTrue(reported)
-        self.assertEqual(observed['metadata']['head'], '0140_shop_order_receipt_snapshot')
+        self.assertEqual(observed['metadata']['head'], '0143_auto_checkout_checkpoint')
         self.assertIn('production-0137.dump', observed['metadata']['archives'])
 
     def test_current_english_baseline_is_a_supported_payment_source(self):
@@ -149,6 +179,9 @@ class RehearsalTests(unittest.TestCase):
                         value = b'{"products":552,"categories":44}'
                     elif query == MODULE.SCHEMA_SQL:
                         value = b'{"unvalidated_constraints":0,"invalid_indexes":0,"indexes":[]}'
+                    elif query in ('SELECT count(*) FROM products WHERE shop_price IS DISTINCT FROM COALESCE(recommended_retail_price, price)',
+                                   'SELECT count(*) FROM checkout_reminders'):
+                        value = b'0'
                     elif 'pg_get_constraintdef(oid,false)' in query:
                         value = b'{}'
                     elif query == 'SELECT version_num FROM alembic_version':
@@ -174,6 +207,12 @@ class RehearsalTests(unittest.TestCase):
                     else:
                         self.assertIn('CREATE DATABASE restore_copy', query)
                 elif command[:2] == ['docker', 'run'] and command[-2:] == ['upgrade', 'head']:
+                    values = dict(line.split('=', 1) for line in Path(command[command.index('--env-file') + 1]).read_text().splitlines() if '=' in line)
+                    for key in ('EMAIL_NOTIFICATIONS_ENABLED', 'CHECKOUT_REMINDER_ENABLED',
+                                'CHECKOUT_REMINDER_SCHEDULER_ENABLED', 'CHECKOUT_REMINDER_LIVE_ENABLED',
+                                'CHECKOUT_REMINDER_LAUNCH_APPROVED'):
+                        self.assertEqual(values[key], 'false')
+                    self.assertEqual(values['CHECKOUT_REMINDER_DRY_RUN'], 'true')
                     migrated = True
                 elif command[:2] == ['docker', 'run'] and '-m' in command:
                     self.assertTrue(english)
@@ -291,8 +330,8 @@ class RehearsalTests(unittest.TestCase):
                     ('products', 'idempotent'), ('categories', 'idempotent')]
         self.assertEqual(observed['english_calls'], expected)
         metadata = observed['metadata']
-        self.assertEqual(metadata['head'], '0140_shop_order_receipt_snapshot')
-        self.assertEqual(set(metadata['archives']), {'production-0134.dump', 'upgraded-0140.dump'})
+        self.assertEqual(metadata['head'], '0143_auto_checkout_checkpoint')
+        self.assertEqual(set(metadata['archives']), {'production-0134.dump', 'upgraded-0143.dump'})
         english = metadata['english_backfill']
         self.assertEqual(english['counts'], dict(products=552, categories=44))
         self.assertEqual(english['input_sha256'], observed['hashes'])
