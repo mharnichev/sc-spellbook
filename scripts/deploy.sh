@@ -80,7 +80,7 @@ compose --profile release run --rm --no-deps --entrypoint python migrate -c \
     import app.core.shop_request_size
     from alembic.config import Config
     from alembic.script import ScriptDirectory
-    if ScriptDirectory.from_config(Config("alembic.ini")).get_heads() != ["0140_shop_order_receipt_snapshot"]:
+    if ScriptDirectory.from_config(Config("alembic.ini")).get_heads() != ["0143_auto_checkout_checkpoint"]:
         raise RuntimeError("Unexpected migration head")
 except Exception:
     raise SystemExit("Backend release preflight failed: settings, modules or schema contract unavailable") from None'

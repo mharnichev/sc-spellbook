@@ -48,7 +48,8 @@ class RehearsalSourceHeadTests(unittest.TestCase):
                                 (['--source-head', '0134_shop_canonical_collation'], '0134_shop_canonical_collation'),
                                 (['--source-head', '0136_category_names_en'], '0136_category_names_en'),
                                 (['--source-head', '0138_shop_content_en'], '0138_shop_content_en'),
-                                (['--source-head', '0139_shop_input_guards'], '0139_shop_input_guards')):
+                                (['--source-head', '0139_shop_input_guards'], '0139_shop_input_guards'),
+                                (['--source-head', '0140_shop_order_receipt_snapshot'], '0140_shop_order_receipt_snapshot')):
             with self.subTest(extra=extra):
                 captured = []
 
