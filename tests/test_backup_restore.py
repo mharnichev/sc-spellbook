@@ -16,6 +16,10 @@ with open(os.environ["DOCKER_CALLS"], "a") as out:
     out.write(json.dumps(args) + "\\n")
 services = ['backend', 'booking-sms-reminders', 'shop', 'admin-app', 'public-site', 'blog', 'caddy', 'postgres']
 container_ids = {hashlib.sha256(name.encode()).hexdigest(): name for name in services}
+if args[:1] == ['run'] and args[-1] == 'import os; print(os.geteuid())':
+    print(os.geteuid()); sys.exit(0)
+if args[:1] == ['run'] and args[-1] == '--runtime-store':
+    sys.exit(1 if os.environ.get('FAIL_INCIDENT_FILES') else 0)
 if args[:2] == ['image', 'inspect']:
     if os.environ.get('FAIL_IMAGE_LOOKUP'):
         print('PRIVATE_TEST_SENTINEL', file=sys.stderr); sys.exit(1)
@@ -168,6 +172,11 @@ class BackupRestoreTests(unittest.TestCase):
         self.stub_docker()
         self.release_root = self.path / 'candidate'
         shutil.copytree(ROOT / 'scripts', self.release_root / 'scripts', ignore=shutil.ignore_patterns('__pycache__'))
+        incident_store = self.path / 'data/sentry-incidents'
+        incident_store.mkdir(parents=True, mode=0o700)
+        preflight = self.release_root / 'scripts/check-sentry-incident-store.py'
+        preflight.write_text(preflight.read_text().replace(
+            "Path('/opt/soulcuts/data/sentry-incidents')", f'Path({str(incident_store)!r})'))
         shutil.copy2(ROOT / 'docker-compose.prod.yml', self.release_root / 'docker-compose.prod.yml')
         (self.release_root / 'versions').mkdir()
         pins = dict(line.split('=', 1) for line in (ROOT / 'versions/production.env').read_text().splitlines() if line and not line.startswith('#'))
@@ -378,6 +387,25 @@ class BackupRestoreTests(unittest.TestCase):
         self.assertFalse(any('stop' in call or 'up' in call for call in self.operations()))
         self.assertFalse((self.path / 'backend-recovery-required').exists())
 
+    def test_unsafe_incident_store_aborts_before_writers_or_migrations(self):
+        self.prepare_deploy()
+        store = self.path / 'data/sentry-incidents'
+        store.chmod(0o755)
+        result = self.run_script('deploy.sh')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Sentry incident store preflight failed', result.stderr)
+        self.assertFalse(any('stop' in call or 'up' in call for call in self.operations()))
+        self.assertFalse((self.path / 'backend-recovery-required').exists())
+
+    def test_runtime_incident_file_failure_aborts_before_writers_or_migrations(self):
+        self.prepare_deploy()
+        self.env['FAIL_INCIDENT_FILES'] = '1'
+        self.assertNotEqual(self.run_script('deploy.sh').returncode, 0)
+        calls = self.operations()
+        self.assertTrue(any('--runtime-store' in call for call in calls))
+        self.assertFalse(any('stop' in call or 'up' in call or 'migrate' in call for call in calls))
+        self.assertFalse((self.path / 'backend-recovery-required').exists())
+
     def test_actual_preflight_sanitizes_settings_import_validation_failure(self):
         self.prepare_deploy()
         self.env['FAIL_PREFLIGHT'] = '1'
@@ -388,7 +416,7 @@ class BackupRestoreTests(unittest.TestCase):
         self.assertIn('Settings()', code)
         self.assertIn('import app.services.master_mono', code)
         self.assertIn('import app.services.mono_checkbox_poll', code)
-        self.assertIn('["0139_shop_input_guards"]', code)
+        self.assertIn('["0140_shop_order_receipt_snapshot"]', code)
         self.assertIn('import app.dependencies.shop_input', code)
         self.assertIn('import app.core.shop_request_size', code)
         self.assertIn('import app.utils.backfill_shop_content_en', code)

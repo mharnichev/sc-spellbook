@@ -20,13 +20,23 @@ SPEC.loader.exec_module(MODULE)
 
 
 class RehearsalTests(unittest.TestCase):
+    def test_input_guards_source_upgrades_to_receipt_snapshot(self):
+        observed = {}
+        _, error, reported, _ = self.exercise(source_head='0139_shop_input_guards', observed=observed)
+        self.assertIsNone(error)
+        self.assertTrue(reported)
+        self.assertEqual(observed['metadata']['head'], '0140_shop_order_receipt_snapshot')
+        self.assertEqual(set(observed['metadata']['archives']),
+                         {'production-0139.dump', 'upgraded-0140.dump'})
+        self.assertEqual(observed['english_calls'], [])
+
     def test_input_guards_upgrade_preserves_content_without_reapplying_backfill(self):
         observed = {}
         calls, error, reported, _ = self.exercise(source_head='0138_shop_content_en', observed=observed)
         self.assertIsNone(error)
         self.assertTrue(reported)
-        self.assertEqual(observed['metadata']['head'], '0139_shop_input_guards')
-        self.assertEqual(set(observed['metadata']['archives']), {'production-0138.dump', 'upgraded-0139.dump'})
+        self.assertEqual(observed['metadata']['head'], '0140_shop_order_receipt_snapshot')
+        self.assertEqual(set(observed['metadata']['archives']), {'production-0138.dump', 'upgraded-0140.dump'})
         self.assertEqual(observed['english_calls'], [])
         self.assertFalse(any('-m' in command for command in calls))
 
@@ -35,7 +45,7 @@ class RehearsalTests(unittest.TestCase):
         _, error, reported, _ = self.exercise(source_head='0137_shop_online_payment', observed=observed)
         self.assertIsNone(error)
         self.assertTrue(reported)
-        self.assertEqual(observed['metadata']['head'], '0139_shop_input_guards')
+        self.assertEqual(observed['metadata']['head'], '0140_shop_order_receipt_snapshot')
         self.assertIn('production-0137.dump', observed['metadata']['archives'])
 
     def test_current_english_baseline_is_a_supported_payment_source(self):
@@ -281,8 +291,8 @@ class RehearsalTests(unittest.TestCase):
                     ('products', 'idempotent'), ('categories', 'idempotent')]
         self.assertEqual(observed['english_calls'], expected)
         metadata = observed['metadata']
-        self.assertEqual(metadata['head'], '0139_shop_input_guards')
-        self.assertEqual(set(metadata['archives']), {'production-0134.dump', 'upgraded-0139.dump'})
+        self.assertEqual(metadata['head'], '0140_shop_order_receipt_snapshot')
+        self.assertEqual(set(metadata['archives']), {'production-0134.dump', 'upgraded-0140.dump'})
         english = metadata['english_backfill']
         self.assertEqual(english['counts'], dict(products=552, categories=44))
         self.assertEqual(english['input_sha256'], observed['hashes'])
