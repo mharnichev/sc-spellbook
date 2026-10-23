@@ -78,6 +78,9 @@ compose --profile release run --rm --no-deps --entrypoint python migrate -c \
     import app.utils.backfill_shop_content_en
     import app.dependencies.shop_input
     import app.core.shop_request_size
+    import app.services.checkout_reminders
+    import app.services.checkout_reminder_email
+    import app.services.checkout_reminder_smtp
     from alembic.config import Config
     from alembic.script import ScriptDirectory
     if ScriptDirectory.from_config(Config("alembic.ini")).get_heads() != ["0143_auto_checkout_checkpoint"]:

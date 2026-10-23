@@ -185,7 +185,7 @@ SCHEMA_SQL = """SELECT jsonb_build_object(
  'unvalidated_constraints',(SELECT count(*) FROM pg_constraint WHERE connamespace='public'::regnamespace AND NOT convalidated),
  'invalid_indexes',(SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid=i.indrelid WHERE c.relnamespace='public'::regnamespace AND NOT i.indisvalid))"""
 def compare_release_schema(source, restored, base_compare, fixture):
-    """Add exact audited 0132/0139 PG16 deparse pairs, never normalize SQL."""
+    """Add exact audited 0132/0139/0142 PG16 deparse pairs, never normalize SQL."""
     from copy import deepcopy
     from hashlib import sha256
 
@@ -196,10 +196,19 @@ def compare_release_schema(source, restored, base_compare, fixture):
         ('shop_ingress_admissions', 'ck_shop_ingress_admissions_action',
          "CHECK (action::text = ANY (ARRAY['otp_send'::character varying, 'otp_verify'::character varying, 'checkout'::character varying, 'feedback'::character varying, 'review'::character varying, 'profile'::character varying, 'search'::character varying, 'cart'::character varying]::text[]))",
          "CHECK (action::text = ANY (ARRAY['otp_send'::character varying::text, 'otp_verify'::character varying::text, 'checkout'::character varying::text, 'feedback'::character varying::text, 'review'::character varying::text, 'profile'::character varying::text, 'search'::character varying::text, 'cart'::character varying::text]))"),
+        ('shop_ingress_admissions', 'ck_shop_ingress_admissions_action',
+         "CHECK (action::text = ANY (ARRAY['otp_send'::character varying, 'otp_verify'::character varying, 'checkout'::character varying, 'feedback'::character varying, 'review'::character varying, 'profile'::character varying, 'search'::character varying, 'cart'::character varying, 'reminder'::character varying, 'reminder_email'::character varying]::text[]))",
+         "CHECK (action::text = ANY (ARRAY['otp_send'::character varying::text, 'otp_verify'::character varying::text, 'checkout'::character varying::text, 'feedback'::character varying::text, 'review'::character varying::text, 'profile'::character varying::text, 'search'::character varying::text, 'cart'::character varying::text, 'reminder'::character varying::text, 'reminder_email'::character varying::text]))"),
+        ('checkout_reminders', 'ck_checkout_reminders_checkout_reminder_state',
+         "CHECK (state::text = ANY (ARRAY['pending'::character varying, 'attempting'::character varying, 'retry'::character varying, 'sent'::character varying, 'dry_run'::character varying, 'uncertain'::character varying, 'cancelled'::character varying, 'completed'::character varying, 'expired'::character varying, 'suppressed'::character varying]::text[]))",
+         "CHECK (state::text = ANY (ARRAY['pending'::character varying::text, 'attempting'::character varying::text, 'retry'::character varying::text, 'sent'::character varying::text, 'dry_run'::character varying::text, 'uncertain'::character varying::text, 'cancelled'::character varying::text, 'completed'::character varying::text, 'expired'::character varying::text, 'suppressed'::character varying::text]))"),
     ]
+    by_identity = {}
+    for table, name, source_definition, restored_definition in pairs:
+        by_identity.setdefault((table, name), set()).add((source_definition, restored_definition))
     working = deepcopy(source)
     accepted = []
-    for table, name, source_definition, restored_definition in pairs:
+    for (table, name), definitions in by_identity.items():
         old = [row for row in source.get('constraints', []) if row[:2] == [table, name]]
         new = [row for row in restored.get('constraints', []) if row[:2] == [table, name]]
         if len(old) > 1 or len(new) > 1:
@@ -207,14 +216,31 @@ def compare_release_schema(source, restored, base_compare, fixture):
         if old != new:
             if (len(old) != 1 or len(new) != 1 or len(old[0]) != 7 or len(new[0]) != 7
                     or old[0][2] != 'c' or old[0][:3] + old[0][4:] != new[0][:3] + new[0][4:]
-                    or old[0][3] != source_definition or new[0][3] != restored_definition):
+                    or (old[0][3], new[0][3]) not in definitions):
                 raise RuntimeError('Unrecognized release constraint difference')
+            source_definition, restored_definition = old[0][3], new[0][3]
             next(row for row in working['constraints'] if row[:2] == [table, name])[3] = restored_definition
             accepted.append(dict(kind='constraint', table=table, name=name,
                                  source_definition=source_definition, restored_definition=restored_definition,
                                  source_sha256=sha256(source_definition.encode()).hexdigest(),
                                  restored_sha256=sha256(restored_definition.encode()).hexdigest()))
     return base_compare(working, restored, fixture) + accepted
+
+
+def save_schema_metadata(output, source, restored):
+    """Keep private, durable diagnostics even when the finite comparison rejects."""
+    for name, value in (('before-schema.json', source), ('after-schema.json', restored)):
+        fd = os.open(output / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, 'w') as stream:
+            json.dump(value, stream, indent=2)
+            stream.write('\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+    fd = os.open(output, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 FINITE_COMPARISON = """
@@ -465,6 +491,7 @@ def main():
         raw_schema_equal = old_raw == new_raw
         before_schema = json.loads(sql('upgrade_copy', SCHEMA_SQL))
         after_schema = json.loads(sql('restore_copy', SCHEMA_SQL))
+        save_schema_metadata(output, before_schema, after_schema)
         for value in (before_schema, after_schema):
             if value['unvalidated_constraints'] or value['invalid_indexes']:
                 raise RuntimeError('Invalid restored constraints or indexes')
