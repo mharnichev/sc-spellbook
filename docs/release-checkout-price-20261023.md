@@ -67,6 +67,21 @@ Successful private production-copy rehearsal:
 This includes the two exact PG16.15 CHECK deparse pairs for the reminder state
 and expanded ingress actions, with strict metadata/raw-DDL checks retained.
 
+## Admin Edit Acceptance Follow-Up
+
+Read-only production acceptance exposed an omitted `shop_price` in the product
+detail page's form-initial-value mapping. No product was saved. Frontend PR 23,
+source `cb3826fd058b8d7f57ca8fffe88ef5b6244f89e0`, fixes that mapping only,
+preserving zero/null handling and supplier/RRP values. Seven regressions execute
+the actual page mapper, form initializer and submit payload; all 602 backoffice
+tests, typecheck, Linux production build and isolated image startup passed.
+Independent review found no remaining omission in the edit flow.
+
+The follow-up changes only the admin image digest. It requires its own green CI
+and normal frontend-only deployment; backend, schema, reminder activation, Shop,
+other application images, secrets and monitoring must remain untouched. Verify
+the production form loads the existing shop price without saving any product.
+
 Local checks include disposable PostgreSQL HTTP/order/import/concurrency tests,
 fake SMTP lifecycle tests, Sentry regressions, all affected frontend unit/type/
 build checks, and mock desktop/mobile browser checks without external mutations.
