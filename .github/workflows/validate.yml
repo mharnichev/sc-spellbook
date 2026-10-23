@@ -33,6 +33,30 @@ jobs:
       - name: Validate Docker Compose
         run: docker compose --env-file versions/production.env -f docker-compose.prod.yml config -q
 
+      - name: Validate isolated monitoring
+        run: |
+          docker compose --env-file monitoring/images.env -f monitoring/compose.yml config -q
+          set -a
+          . monitoring/images.env
+          set +a
+          docker pull "$PROMETHEUS_IMAGE"
+          docker pull "$LOKI_IMAGE"
+          docker pull "$ALLOY_IMAGE"
+          docker run --rm --network none --read-only --tmpfs /tmp:rw,size=16m \
+            -v "$PWD/monitoring:/etc/prometheus:ro" --entrypoint /bin/promtool \
+            "$PROMETHEUS_IMAGE" check config /etc/prometheus/prometheus.yml
+          docker run --rm --network none --read-only --tmpfs /tmp:rw,size=16m --tmpfs /loki:rw,size=16m \
+            -v "$PWD/monitoring/loki.yml:/etc/loki/loki.yml:ro" \
+            "$LOKI_IMAGE" -config.file=/etc/loki/loki.yml -verify-config=true
+          docker run --rm --network none --read-only --tmpfs /tmp:rw,size=16m \
+            -v "$PWD/monitoring/config.alloy:/etc/alloy/config.alloy:ro" \
+            "$ALLOY_IMAGE" validate /etc/alloy/config.alloy
+
+      - name: Verify actual monitoring stack with persistent test volumes
+        run: |
+          docker compose --env-file monitoring/images.env -f monitoring/compose.yml pull
+          python3 -B monitoring/integration.py
+
       - name: Validate Caddyfile
         run: |
           digest=sha256:af32e97399febea808609119bb21544d0265c58a02836576e32a2d082c262c17
