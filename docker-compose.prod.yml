@@ -128,6 +128,7 @@ services:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
       UPLOAD_DIR: /app/data/uploads
+      SENTRY_INCIDENT_STORE: /app/data/private/sentry-incidents/incidents.sqlite3
       CORS_ORIGINS: https://soulcuts.com.ua,https://www.soulcuts.com.ua,https://admin.soulcuts.com.ua
       CAMPAIGN_RUN_SCHEDULER_ENABLED: "true"
       CAMPAIGN_RUN_SCHEDULER_INTERVAL_SECONDS: "30"
@@ -166,6 +167,11 @@ services:
       - "8000"
     volumes:
       - /opt/soulcuts/data/uploads:/app/data/uploads
+      - type: bind
+        source: /opt/soulcuts/data/sentry-incidents
+        target: /app/data/private/sentry-incidents
+        bind:
+          create_host_path: false
     depends_on:
       postgres:
         condition: service_healthy
@@ -188,6 +194,7 @@ services:
       DEBUG: "false"
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
+      SENTRY_INCIDENT_STORE: /app/data/private/sentry-incidents/incidents.sqlite3
       CORS_ORIGINS: https://soulcuts.com.ua,https://www.soulcuts.com.ua,https://admin.soulcuts.com.ua
     command: >
       sh -c 'stopping=false;
@@ -200,6 +207,12 @@ services:
       wait "$$child" || true;
       done'
     entrypoint: []
+    volumes:
+      - type: bind
+        source: /opt/soulcuts/data/sentry-incidents
+        target: /app/data/private/sentry-incidents
+        bind:
+          create_host_path: false
     depends_on:
       backend:
         condition: service_healthy

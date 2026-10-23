@@ -103,6 +103,19 @@ class StartupTests(unittest.TestCase):
 
 
 class ComposeTests(unittest.TestCase):
+    def test_private_incident_store_is_persistent_and_never_auto_created(self):
+        for name in ('backend', 'booking-sms-reminders'):
+            service = self.config['services'][name]
+            self.assertEqual(service['environment']['SENTRY_INCIDENT_STORE'],
+                             '/app/data/private/sentry-incidents/incidents.sqlite3')
+            mounts = [mount for mount in service['volumes']
+                      if mount['target'] == '/app/data/private/sentry-incidents']
+            self.assertEqual(len(mounts), 1)
+            self.assertEqual(mounts[0]['source'], '/opt/soulcuts/data/sentry-incidents')
+            self.assertEqual(mounts[0]['type'], 'bind')
+            self.assertFalse(mounts[0].get('read_only', False))
+            self.assertFalse(mounts[0].get('bind', {}).get('create_host_path', False))
+
     @classmethod
     def setUpClass(cls):
         env = {**os.environ, 'SHOP_IMAGE': 'local/shop:validation-only'}

@@ -12,6 +12,16 @@ WRITERS_STOPPING=false
 compose() {
   docker compose --project-name "${PROJECT_NAME}" --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" "$@"
 }
+preflight_sentry_store() {
+  local runtime_uid
+  runtime_uid="$(docker run --rm --pull=never --network none --entrypoint python "${next_backend}" -c 'import os; print(os.geteuid())')"
+  python3 "${ROOT_DIR}/scripts/check-sentry-incident-store.py" "${runtime_uid}"
+  docker run --rm --interactive --pull=never --network none --read-only \
+    --cap-drop ALL --security-opt no-new-privileges --pids-limit 32 --memory 64m --cpus 0.5 \
+    --mount type=bind,src=/opt/soulcuts/data/sentry-incidents,dst=/state,readonly \
+    --entrypoint python "${next_backend}" - --runtime-store \
+    < "${ROOT_DIR}/scripts/check-sentry-incident-store.py"
+}
 source "${ROOT_DIR}/scripts/release-lock.sh"
 acquire_release_lock
 [[ -L "${CURRENT_LINK}" ]] || { echo 'An existing current release is required; bootstrap is a separate procedure.' >&2; exit 1; }
@@ -51,6 +61,7 @@ python3 "${ROOT_DIR}/scripts/check-ingress-network.py" "${PROJECT_NAME}_api_ingr
 export APP_DIR COMPOSE_PROJECT_NAME="${PROJECT_NAME}"
 if [[ "${BACKEND_CHANGED}" == true ]]; then
 compose --profile release pull
+preflight_sentry_store
 # Reject the still-pinned old backend before touching running writers.
 compose --profile release run --rm --no-deps --entrypoint python migrate -c \
   'try:
@@ -69,7 +80,7 @@ compose --profile release run --rm --no-deps --entrypoint python migrate -c \
     import app.core.shop_request_size
     from alembic.config import Config
     from alembic.script import ScriptDirectory
-    if ScriptDirectory.from_config(Config("alembic.ini")).get_heads() != ["0139_shop_input_guards"]:
+    if ScriptDirectory.from_config(Config("alembic.ini")).get_heads() != ["0140_shop_order_receipt_snapshot"]:
         raise RuntimeError("Unexpected migration head")
 except Exception:
     raise SystemExit("Backend release preflight failed: settings, modules or schema contract unavailable") from None'
