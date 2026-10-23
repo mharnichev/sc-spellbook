@@ -36,7 +36,7 @@ INSPECT = ('{"id":{{json .Id}},"project":{{json (index .Config.Labels '
            '"com.docker.compose.project")}},"service":{{json (index .Config.Labels '
            '"com.docker.compose.service")}},"state":{{json .State.Status}},'
            '"started":{{json .State.StartedAt}},"health":'
-           '{{if .State.Health}}{{json .State.Health.Status}}{{else}}"none"{{end}}}')
+           '{{with index .State "Health"}}{{json .Status}}{{else}}"none"{{end}}}')
 
 
 class CollectionError(Exception):

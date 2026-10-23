@@ -58,6 +58,10 @@ verify=importlib.util.module_from_spec(spec);spec.loader.exec_module(verify)
 with log.open('a') as output:
     try:
         subprocess.run(compose+['up','-d','--no-deps','grafana','prometheus','loki','alloy','node-exporter'],env=env,stdout=output,stderr=output,check=True,timeout=120)
+        collector_spec=importlib.util.spec_from_file_location('monitoring_collect',source/'monitoring/collect.py')
+        collector=importlib.util.module_from_spec(collector_spec);collector_spec.loader.exec_module(collector)
+        inspected=json.loads(subprocess.check_output(['docker','inspect','--format',collector.INSPECT,project+'-grafana-1'],text=True,timeout=10))
+        assert inspected['health']=='none', 'Native Docker template must support a missing Health field'
         result=verify.wait_ready(verify.Grafana('http://127.0.0.1:3300',password),marker=marker,timeout=180)
         result.update(project=project,synthetic_data_only=True,test_storage='tmpfs' if args.tmpfs else 'persistent')
         print(json.dumps(result))

@@ -23,6 +23,10 @@ SECRET = ("postgres://user:pass@db/private?token=synthetic-token "
 
 
 class CollectorTests(unittest.TestCase):
+    def test_inspect_template_uses_safe_optional_health_lookup(self):
+        self.assertNotIn('.State.Health', c.INSPECT)
+        self.assertIn('with index .State "Health"', c.INSPECT)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
