@@ -34,6 +34,7 @@ services = ['caddy','public-site','blog','admin-app','shop','backend','booking-s
 now = datetime.datetime.now(datetime.timezone.utc)
 for p in ['spool/logs','spool/metrics','data/alloy','secrets']:
     (root/p).mkdir(parents=True,mode=0o750)
+    (root/p).chmod(0o750)
 for name in ['grafana_admin_password','grafana_secret_key']:
     p=root/'secrets'/name
     p.write_text((password if name.endswith('password') else secrets.token_urlsafe(36))+'\n')
