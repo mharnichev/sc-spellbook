@@ -49,7 +49,7 @@ image pins change; public-site, blog, Postgres and Caddy pins stay unchanged.
 Final local evidence: 360 backend exact-image tests passed, no skips; 834 Shop/
 backoffice tests passed; 6 mocked browser scenarios passed; all four frontend
 typechecks passed; affected production builds and network-isolated image SSR/
-PNG checks passed. Infrastructure: 339 tests passed with 8 local conditional
+PNG checks passed. Infrastructure: 347 tests passed with 8 local conditional
 Caddy skips; CI must execute its actual native Caddy gates. Independent review
 closed both queue-starvation and uncertain-intent recovery findings.
 
@@ -59,6 +59,13 @@ pre-release service/config/data baseline, approved-env hash ledger and private
 env backup, exact-image manifest, and pending/accepted/follow-up comparisons.
 The rehearsal prints its own private backup directory. None of these planned
 acceptance phases is implied complete merely by publishing this runbook.
+
+Exact candidate provenance: 440 runtime files match the frozen backend source;
+all 51 installed runtime distributions match the previous production image.
+Successful private production-copy rehearsal:
+`/opt/soulcuts/backups/shop-rehearsal-6a2dec3c346844a69cef2821c11b4212`.
+This includes the two exact PG16.15 CHECK deparse pairs for the reminder state
+and expanded ingress actions, with strict metadata/raw-DDL checks retained.
 
 Local checks include disposable PostgreSQL HTTP/order/import/concurrency tests,
 fake SMTP lifecycle tests, Sentry regressions, all affected frontend unit/type/
