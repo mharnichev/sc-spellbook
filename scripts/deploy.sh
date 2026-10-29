@@ -32,6 +32,14 @@ BACKEND_CHANGED=false
 [[ "${previous_backend}" == "${next_backend}" ]] || BACKEND_CHANGED=true
 # Release pins, not inherited shell overrides, define backend-change ownership.
 export BACKEND_IMAGE="${next_backend}"
+REQUIRED_SCOPE=""
+admin_only_image=""
+if [[ -f "${ROOT_DIR}/versions/deploy.scope" ]]; then
+  REQUIRED_SCOPE="$(cat "${ROOT_DIR}/versions/deploy.scope")"
+  [[ "${REQUIRED_SCOPE}" == admin-app ]] || { echo 'Unsupported required deployment scope.' >&2; exit 1; }
+  admin_only_image="$(python3 "${ROOT_DIR}/scripts/admin-only-release.py" "${PREVIOUS_RELEASE}" "${ROOT_DIR}" --allow-unchanged)"
+  [[ -n "${admin_only_image}" ]] || { echo 'Admin-only scope refused: other pins or shared configuration differ or are unavailable.' >&2; exit 1; }
+fi
 failed() {
   local status=$?
   trap - ERR
@@ -105,10 +113,23 @@ compose --profile release run --rm --no-deps migrate
 compose --profile release run --rm --no-deps --entrypoint python migrate -m app.core.migration_readiness
 compose up -d --remove-orphans
 else
-  compose pull public-site blog admin-app shop caddy
+  if [[ -z "${REQUIRED_SCOPE}" ]]; then
+    admin_only_image="$(python3 "${ROOT_DIR}/scripts/admin-only-release.py" "${PREVIOUS_RELEASE}" "${ROOT_DIR}")"
+  fi
+  if [[ -n "${admin_only_image}" ]]; then
+    export ADMIN_APP_IMAGE="${admin_only_image}"
+    compose pull admin-app
+  else
+    compose pull public-site blog admin-app shop caddy
+  fi
   # Do not recreate API/reminders or apply backend config on frontend-only releases.
   compose exec -T backend python -m app.core.migration_readiness
-  compose up -d --no-deps public-site blog admin-app shop caddy
+  if [[ -n "${admin_only_image}" ]]; then
+    # Caddy can keep its previous release mount: its bytes and Compose are identical.
+    compose up -d --no-deps admin-app
+  else
+    compose up -d --no-deps public-site blog admin-app shop caddy
+  fi
 fi
 for service in postgres backend booking-sms-reminders public-site blog admin-app shop caddy; do
   healthy=false
