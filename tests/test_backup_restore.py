@@ -14,6 +14,9 @@ import hashlib, json, os, sys
 args = sys.argv[1:]
 with open(os.environ["DOCKER_CALLS"], "a") as out:
     out.write(json.dumps(args) + "\\n")
+if os.environ.get('EXPECT_ADMIN_LITERAL') and ('pull' in args or 'up' in args):
+    assert args[-1] == 'admin-app'
+    assert os.environ.get('ADMIN_APP_IMAGE') == json.loads(os.environ['TEST_IMAGE_REFS'])['admin-app']
 services = ['backend', 'booking-sms-reminders', 'shop', 'admin-app', 'public-site', 'blog', 'caddy', 'postgres']
 container_ids = {hashlib.sha256(name.encode()).hexdigest(): name for name in services}
 if args[:1] == ['run'] and args[-1] == 'import os; print(os.geteuid())':
@@ -252,6 +255,99 @@ class BackupRestoreTests(unittest.TestCase):
         self.assertFalse(any('stop' in call or 'run' in call for call in self.operations()))
         self.assertFalse((self.path / 'backend-recovery-required').exists())
         self.assertEqual((self.path / 'current').resolve(), self.previous.resolve())
+
+    def prepare_admin_only(self):
+        self.prepare_deploy()
+        self.same_backend()
+        path = self.previous / 'versions/production.env'
+        path.write_text(path.read_text().replace('admin_app_image@sha256:' + '3' * 64,
+                                                'admin_app_image@sha256:' + '6' * 64))
+        shutil.copy2(self.release_root / 'docker-compose.prod.yml', self.previous / 'docker-compose.prod.yml')
+        for root in (self.release_root, self.previous):
+            (root / 'caddy').mkdir()
+            (root / 'caddy/Caddyfile').write_text('synthetic identical caddy configuration')
+        (self.release_root / 'versions/deploy.scope').write_text('admin-app\n')
+        self.env['EXPECT_ADMIN_LITERAL'] = '1'
+
+    def test_admin_only_never_pulls_or_recreates_other_services(self):
+        self.prepare_admin_only()
+        self.env['ADMIN_APP_IMAGE'] = 'untrusted-shell-override'
+        result = self.run_script('deploy.sh')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.operations()
+        self.assertEqual([call[call.index('pull'):] for call in calls if 'pull' in call], [['pull', 'admin-app']])
+        self.assertEqual([call[call.index('up'):] for call in calls if 'up' in call], [['up', '-d', '--no-deps', 'admin-app']])
+        self.assertFalse(any('stop' in call or 'run' in call for call in calls))
+        self.assertFalse((self.path / 'backend-recovery-required').exists())
+        self.assertEqual((self.path / 'current').resolve(), self.release_root)
+
+    def test_admin_only_failure_keeps_current_and_other_services(self):
+        self.prepare_admin_only()
+        self.env['FAIL_UP'] = '1'
+        self.assertNotEqual(self.run_script('deploy.sh').returncode, 0)
+        self.assertEqual((self.path / 'current').resolve(), self.previous.resolve())
+        self.assertEqual([call[call.index('up'):] for call in self.operations() if 'up' in call], [['up', '-d', '--no-deps', 'admin-app']])
+        self.assertFalse(any('stop' in call for call in self.operations()))
+
+    def test_changed_shared_configuration_refuses_admin_only_path(self):
+        for name in ('docker-compose.prod.yml', 'caddy/Caddyfile'):
+            with self.subTest(name=name):
+                # Separate synthetic releases avoid shared test state.
+                test = BackupRestoreTests('runTest')
+                test.setUp()
+                try:
+                    test.prepare_admin_only()
+                    path = test.previous / name
+                    path.write_text(path.read_text() + '\nchanged')
+                    result = test.run_script('deploy.sh')
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn('Admin-only scope refused', result.stderr)
+                    self.assertFalse(test.calls.exists())
+                finally:
+                    test.doCleanups()
+
+    def test_required_admin_only_rejects_other_pins_and_missing_inputs_before_docker(self):
+        for change in ('BACKEND_IMAGE', 'SHOP_IMAGE', 'PUBLIC_SITE_IMAGE', 'missing-caddy', 'duplicate-admin'):
+            with self.subTest(change=change):
+                test = BackupRestoreTests('runTest')
+                test.setUp()
+                try:
+                    test.prepare_admin_only()
+                    path = test.release_root / 'versions/production.env'
+                    if change == 'missing-caddy':
+                        (test.previous / 'caddy/Caddyfile').unlink()
+                    elif change == 'duplicate-admin':
+                        path.write_text(path.read_text() + 'ADMIN_APP_IMAGE=invalid\n')
+                    else:
+                        path.write_text('\n'.join(line+'-different' if line.startswith(change+'=') else line for line in path.read_text().splitlines())+'\n')
+                    self.assertNotEqual(test.run_script('deploy.sh').returncode, 0)
+                    self.assertFalse(test.calls.exists())
+                    self.assertEqual((test.path / 'current').resolve(), test.previous.resolve())
+                finally:
+                    test.doCleanups()
+
+    def test_required_admin_only_acceptance_failures_never_broaden_scope(self):
+        for flag in ('FAIL_PULL', 'FAIL_SCHEMA', 'FAIL_HEALTH', 'FAIL_OWNER', 'FAIL_IMAGE_SERVICE'):
+            with self.subTest(flag=flag):
+                test = BackupRestoreTests('runTest')
+                test.setUp()
+                try:
+                    test.prepare_admin_only()
+                    test.env[flag] = 'admin-app' if flag == 'FAIL_IMAGE_SERVICE' else '1'
+                    self.assertNotEqual(test.run_script('deploy.sh').returncode, 0)
+                    self.assertEqual((test.path / 'current').resolve(), test.previous.resolve())
+                    calls = test.operations()
+                    self.assertFalse(any('stop' in call or 'run' in call for call in calls))
+                    self.assertTrue(all(call[-1]=='admin-app' for call in calls if 'up' in call or 'pull' in call))
+                finally:
+                    test.doCleanups()
+
+    def test_required_admin_only_noop_rerun_stays_scoped(self):
+        self.prepare_admin_only()
+        self.same_backend()
+        result = self.run_script('deploy.sh')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([call[call.index('up'):] for call in self.operations() if 'up' in call], [['up', '-d', '--no-deps', 'admin-app']])
 
     def test_existing_release_is_required(self):
         self.prepare_deploy()

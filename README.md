@@ -308,6 +308,13 @@ Open a PR and merge it into `main`.
 
 ## Rollback
 
+An `admin-app` value in `versions/deploy.scope` requires a backoffice-only
+deployment: only its image pin may change, shared Compose/Caddy bytes must match,
+and all usual acceptance gates still apply. No other service is pulled or
+recreated. Remove this release intent explicitly when preparing a broader
+release. Caddy can retain a mount from the previous identical release; do not
+delete a release directory still mounted by a running container.
+
 SSH to the server:
 
 ```bash
