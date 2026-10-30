@@ -238,6 +238,7 @@ class BackupRestoreTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.operations()
         self.assertFalse(any('stop' in call or 'run' in call for call in calls))
+
         self.assertFalse(any(any('pg_dump' in arg for arg in call) for call in calls))
         self.assertFalse((self.path / 'backend-recovery-required').exists())
         self.assertFalse((self.path / 'backups').exists())
@@ -281,6 +282,67 @@ class BackupRestoreTests(unittest.TestCase):
         self.assertFalse((self.path / 'backend-recovery-required').exists())
         self.assertEqual((self.path / 'current').resolve(), self.release_root)
 
+    def prepare_backend_admin(self):
+        self.prepare_admin_only()
+        self.env.pop('EXPECT_ADMIN_LITERAL')
+        path = self.previous / 'versions/production.env'
+        path.write_text(path.read_text().replace('backend_image@sha256:' + '1' * 64,
+                                                'backend_image@sha256:' + '7' * 64))
+        (self.release_root / 'versions/deploy.scope').write_text('backend-admin\n')
+
+    def test_backend_admin_keeps_backup_migration_and_acceptance_gates_scoped(self):
+        self.prepare_backend_admin()
+        result = self.run_script('deploy.sh')
+        self.assertEqual(result.returncode, 3, result.stderr)
+        calls = self.operations()
+        self.assertEqual([c[c.index('pull'):] for c in calls if 'pull' in c],
+                         [['pull', 'backend', 'booking-sms-reminders', 'migrate', 'admin-app']])
+        self.assertEqual([c[c.index('up'):] for c in calls if 'up' in c],
+                         [['up', '-d', '--no-deps', 'backend', 'booking-sms-reminders', 'admin-app']])
+        self.assertTrue(any(any('pg_dump' in arg for arg in c) for c in calls))
+        self.assertTrue(any(c[-1] == 'migrate' for c in calls))
+        self.assertTrue((self.path / 'backend-recovery-required').exists())
+        self.assertEqual((self.path / 'current').resolve(), self.previous)
+
+    def test_backend_admin_rejects_unrelated_pins_config_and_missing_inputs_before_docker(self):
+        for mutation in ('shop', 'backend-unchanged', 'compose', 'caddy', 'missing-pins'):
+            with self.subTest(mutation=mutation):
+                test = BackupRestoreTests()
+                test.setUp()
+                self.addCleanup(test.doCleanups)
+                test.prepare_backend_admin()
+                path = test.previous / 'versions/production.env'
+                if mutation == 'shop':
+                    path.write_text(path.read_text().replace('shop_image@sha256:' + '2' * 64,
+                                                            'shop_image@sha256:' + '8' * 64))
+                elif mutation == 'backend-unchanged':
+                    path.write_text(path.read_text().replace('backend_image@sha256:' + '7' * 64,
+                                                            'backend_image@sha256:' + '1' * 64))
+                elif mutation == 'missing-pins':
+                    path.unlink()
+                else:
+                    path = test.previous / ('docker-compose.prod.yml' if mutation == 'compose' else 'caddy/Caddyfile')
+                    path.write_text('changed')
+                self.assertNotEqual(test.run_script('deploy.sh').returncode, 0)
+                self.assertFalse(test.calls.exists())
+
+    def test_backend_admin_failures_preserve_current_and_never_broaden_scope(self):
+        for failure in ('FAIL_PULL', 'FAIL_PREFLIGHT', 'FAIL_DUMP', 'FAIL_MIGRATE', 'FAIL_SCHEMA',
+                        'FAIL_UP', 'FAIL_HEALTH', 'FAIL_OWNER', 'FAIL_IMAGE_LOOKUP'):
+            with self.subTest(failure=failure):
+                test = BackupRestoreTests()
+                test.setUp()
+                self.addCleanup(test.doCleanups)
+                test.prepare_backend_admin()
+                test.env[failure] = '1'
+                result = test.run_script('deploy.sh')
+                self.assertNotIn(result.returncode, (0, 3))
+                self.assertEqual((test.path / 'current').resolve(), test.previous)
+                for call in test.operations():
+                    if 'pull' in call or 'up' in call:
+                        self.assertNotIn('--remove-orphans', call)
+                        self.assertFalse(set(call) & {'shop', 'public-site', 'blog', 'caddy', 'postgres'})
+
     def test_admin_only_failure_keeps_current_and_other_services(self):
         self.prepare_admin_only()
         self.env['FAIL_UP'] = '1'
@@ -301,7 +363,7 @@ class BackupRestoreTests(unittest.TestCase):
                     path.write_text(path.read_text() + '\nchanged')
                     result = test.run_script('deploy.sh')
                     self.assertNotEqual(result.returncode, 0)
-                    self.assertIn('Admin-only scope refused', result.stderr)
+                    self.assertIn('Required scope refused', result.stderr)
                     self.assertFalse(test.calls.exists())
                 finally:
                     test.doCleanups()
@@ -512,7 +574,7 @@ class BackupRestoreTests(unittest.TestCase):
         self.assertIn('Settings()', code)
         self.assertIn('import app.services.master_mono', code)
         self.assertIn('import app.services.mono_checkbox_poll', code)
-        self.assertIn('["0143_auto_checkout_checkpoint"]', code)
+        self.assertIn('["0144_master_rewards"]', code)
         self.assertIn('import app.dependencies.shop_input', code)
         self.assertIn('import app.core.shop_request_size', code)
         for module in ('checkout_reminders', 'checkout_reminder_email', 'checkout_reminder_smtp'):
