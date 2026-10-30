@@ -1,13 +1,21 @@
 # Manual master rewards release preparation
 
-Scope: backend PR20 c96e89f9563e7c123dfea74607927a1a24469083 and backoffice
-PR40 9afeca7441940bea340355a1283b66010e5a82b0 only. Other local work is excluded.
-Source repositories have no checks; an empty check rollup is not a passed CI.
+Scope: backend PR20 e90556f1fd1cd5d0c246342dcae894870c0f66c2 and backoffice
+PR40 323a54770d1a37da9d89906ef89789e70d6e36ce only. Other local work is excluded.
+Runtime code is unchanged from the reviewed c96e89f9 / 9afeca74 implementation;
+additional source changes are independently reviewed hosted-build workflows.
+An empty check rollup is not a passed CI.
 
-The candidate requires new immutable BACKEND_IMAGE and ADMIN_APP_IMAGE pins before
-release, plus `versions/deploy.scope` set to `backend-admin`. This preparation
-does not yet change pins or activate that scope. Do not merge this preparation
-until image, exact-head CI and independent review gates are complete.
+The candidate pins immutable BACKEND_IMAGE and ADMIN_APP_IMAGE digests and sets
+`versions/deploy.scope` to `backend-admin`. Do not merge until final exact-head
+infra CI and independent review gates are complete.
+
+Hosted image build/smoke/publish gates passed:
+- Backend: https://github.com/mharnichev/sc-be/actions/runs/41134780721
+- Backoffice: https://github.com/mharnichev/sc-fe/actions/runs/41133704388
+Backend CI also verified synthetic 0143-to-0144 existing-data preservation,
+unset initial rate, empty ledger, immutable history and downgrade refusal.
+Both production registry pulls must succeed before stopping writers.
 
 The scoped path rejects unrelated image or Compose/Caddy configuration changes
 before Docker mutation. Only backend, its shared-image booking-sms-reminders
@@ -18,9 +26,11 @@ unchanged. Existing release lock, recovery marker, Sentry-store preflight, image
 identity, scheduler ownership and manual acceptance gates remain mandatory.
 
 Migration 0144 creates six private tables; no backfill, initial rate unset.
-Rollback must preserve ledger tables and data: no destructive downgrade or
-automatic database restore after writes. On failure retain recovery marker and
-stopped writers until explicit recovery reconciliation.
+Recovery must preserve ledger tables and data: no destructive downgrade or
+automatic database restore after writes. The old 0143 image rejects schema 0144;
+it is not a drop-in rollback. Use forward-compatible recovery retaining 0144 and
+history. On failure retain recovery marker and stopped writers until explicit
+recovery reconciliation.
 
 Production acceptance is read-only: health, immutable image identity, served
 assets, API schema/access denial, authorized private reads if available,
