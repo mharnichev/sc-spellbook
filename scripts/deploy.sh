@@ -36,9 +36,15 @@ REQUIRED_SCOPE=""
 admin_only_image=""
 if [[ -f "${ROOT_DIR}/versions/deploy.scope" ]]; then
   REQUIRED_SCOPE="$(cat "${ROOT_DIR}/versions/deploy.scope")"
-  [[ "${REQUIRED_SCOPE}" == admin-app ]] || { echo 'Unsupported required deployment scope.' >&2; exit 1; }
-  admin_only_image="$(python3 "${ROOT_DIR}/scripts/admin-only-release.py" "${PREVIOUS_RELEASE}" "${ROOT_DIR}" --allow-unchanged)"
-  [[ -n "${admin_only_image}" ]] || { echo 'Admin-only scope refused: other pins or shared configuration differ or are unavailable.' >&2; exit 1; }
+  case "${REQUIRED_SCOPE}" in
+    admin-app)
+      admin_only_image="$(python3 "${ROOT_DIR}/scripts/admin-only-release.py" "${PREVIOUS_RELEASE}" "${ROOT_DIR}" --allow-unchanged)" ;;
+    backend-admin)
+      admin_only_image="$(python3 "${ROOT_DIR}/scripts/admin-only-release.py" "${PREVIOUS_RELEASE}" "${ROOT_DIR}" --backend-admin)" ;;
+    *) echo 'Unsupported required deployment scope.' >&2; exit 1 ;;
+  esac
+  [[ -n "${admin_only_image}" ]] || { echo 'Required scope refused: other pins or shared configuration differ or are unavailable.' >&2; exit 1; }
+  export ADMIN_APP_IMAGE="${admin_only_image}"
 fi
 failed() {
   local status=$?
@@ -68,7 +74,11 @@ python3 "${ROOT_DIR}/scripts/verify-deployed-images.py" --pins-only
 python3 "${ROOT_DIR}/scripts/check-ingress-network.py" "${PROJECT_NAME}_api_ingress"
 export APP_DIR COMPOSE_PROJECT_NAME="${PROJECT_NAME}"
 if [[ "${BACKEND_CHANGED}" == true ]]; then
-compose --profile release pull
+if [[ "${REQUIRED_SCOPE}" == backend-admin ]]; then
+  compose --profile release pull backend booking-sms-reminders migrate admin-app
+else
+  compose --profile release pull
+fi
 preflight_sentry_store
 # Reject the still-pinned old backend before touching running writers.
 compose --profile release run --rm --no-deps --entrypoint python migrate -c \
@@ -91,7 +101,7 @@ compose --profile release run --rm --no-deps --entrypoint python migrate -c \
     import app.services.checkout_reminder_smtp
     from alembic.config import Config
     from alembic.script import ScriptDirectory
-    if ScriptDirectory.from_config(Config("alembic.ini")).get_heads() != ["0143_auto_checkout_checkpoint"]:
+    if ScriptDirectory.from_config(Config("alembic.ini")).get_heads() != ["0144_master_rewards"]:
         raise RuntimeError("Unexpected migration head")
 except Exception:
     raise SystemExit("Backend release preflight failed: settings, modules or schema contract unavailable") from None'
@@ -111,7 +121,11 @@ bash "${ROOT_DIR}/scripts/backup-files.sh"
 python3 "${ROOT_DIR}/scripts/backup-manifest.py" "${BACKUP_DIR}"
 compose --profile release run --rm --no-deps migrate
 compose --profile release run --rm --no-deps --entrypoint python migrate -m app.core.migration_readiness
-compose up -d --remove-orphans
+if [[ "${REQUIRED_SCOPE}" == backend-admin ]]; then
+  compose up -d --no-deps backend booking-sms-reminders admin-app
+else
+  compose up -d --remove-orphans
+fi
 else
   if [[ -z "${REQUIRED_SCOPE}" ]]; then
     admin_only_image="$(python3 "${ROOT_DIR}/scripts/admin-only-release.py" "${PREVIOUS_RELEASE}" "${ROOT_DIR}")"

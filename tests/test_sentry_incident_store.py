@@ -122,7 +122,8 @@ class IncidentStoreTests(unittest.TestCase):
         self.assertIn('"${next_backend}" - --runtime-store', function)
         branch = source.split('if [[ "${BACKEND_CHANGED}" == true ]]; then', 1)[1]
         self.assertLess(branch.index('preflight_sentry_store'), branch.index('WRITERS_STOPPING=true'))
-        self.assertNotIn('preflight_sentry_store', branch.split('\nelse\n', 1)[1])
+        frontend = branch.split('\nelse\n  if [[ -z "${REQUIRED_SCOPE}" ]]; then', 1)[1]
+        self.assertNotIn('preflight_sentry_store', frontend)
 
 
 if __name__ == '__main__':
