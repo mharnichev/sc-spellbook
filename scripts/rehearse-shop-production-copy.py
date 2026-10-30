@@ -17,7 +17,7 @@ import uuid
 
 HEAD = "0144_master_rewards"
 BASE = "0110_nova_poshta_directory"
-SOURCE_HEADS = (BASE, "0129_shop_ingress_limits", "0134_shop_canonical_collation", "0136_category_names_en", "0137_shop_online_payment", "0138_shop_content_en", "0139_shop_input_guards", "0140_shop_order_receipt_snapshot", HEAD)
+SOURCE_HEADS = (BASE, "0129_shop_ingress_limits", "0134_shop_canonical_collation", "0136_category_names_en", "0137_shop_online_payment", "0138_shop_content_en", "0139_shop_input_guards", "0140_shop_order_receipt_snapshot", "0143_auto_checkout_checkpoint", HEAD)
 
 
 def source_archive_name(head):
@@ -39,7 +39,7 @@ def verify_source_copy(sql, expected):
 
 def verify_checkout_upgrade(sql, source_head):
     # A repeated rehearsal at HEAD may already contain legitimate reminder rows.
-    if source_head == HEAD:
+    if source_head in ("0143_auto_checkout_checkpoint", HEAD):
         return None
     mismatch = sql('upgrade_copy', 'SELECT count(*) FROM products WHERE shop_price IS DISTINCT FROM COALESCE(recommended_retail_price, price)')
     if mismatch != '0':

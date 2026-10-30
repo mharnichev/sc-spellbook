@@ -20,6 +20,13 @@ SPEC.loader.exec_module(MODULE)
 
 
 class RehearsalTests(unittest.TestCase):
+    def test_current_production_baseline_does_not_reapply_historical_checkout_assertions(self):
+        self.assertIn('0143_auto_checkout_checkpoint', MODULE.SOURCE_HEADS)
+        self.assertEqual(MODULE.source_archive_name('0143_auto_checkout_checkpoint'), 'production-0143.dump')
+        def unexpected_sql(*args):
+            self.fail('Existing production prices and reminders must not be treated as new backfill')
+        self.assertIsNone(MODULE.verify_checkout_upgrade(unexpected_sql, '0143_auto_checkout_checkpoint'))
+
     def test_checkout_upgrade_validates_prices_and_no_historical_enrollment(self):
         queries = []
         def sql(database, query):
