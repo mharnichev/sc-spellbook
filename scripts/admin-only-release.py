@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Select the admin-only path only when shared runtime inputs are identical."""
+"""Validate narrow application scopes against immutable pins and shared inputs."""
 import importlib.util
 from pathlib import Path
 import sys
@@ -9,12 +9,18 @@ images = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(images)
 
 
-def admin_image(previous, current, *, allow_unchanged=False, backend_admin=False):
+def admin_image(previous, current, *, allow_unchanged=False, backend_admin=False,
+                admin_shop=False, select_shop=False):
     try:
         old = images.pins(previous / 'versions/production.env')
         new = images.pins(current / 'versions/production.env')
         changed = {key for key in new if new[key] != old[key]}
-        if backend_admin:
+        if backend_admin and admin_shop or select_shop and not admin_shop:
+            return ''
+        if admin_shop:
+            if changed - {'ADMIN_APP_IMAGE', 'SHOP_IMAGE'} or (not changed and not allow_unchanged):
+                return ''
+        elif backend_admin:
             if 'BACKEND_IMAGE' not in changed or changed - {'BACKEND_IMAGE', 'ADMIN_APP_IMAGE'}:
                 return ''
         elif changed != {'ADMIN_APP_IMAGE'} and not (allow_unchanged and not changed):
@@ -22,7 +28,7 @@ def admin_image(previous, current, *, allow_unchanged=False, backend_admin=False
         for name in ('docker-compose.prod.yml', 'caddy/Caddyfile'):
             if (previous / name).read_bytes() != (current / name).read_bytes():
                 return ''
-        return new['ADMIN_APP_IMAGE']
+        return new['SHOP_IMAGE' if select_shop else 'ADMIN_APP_IMAGE']
     except (OSError, images.VerificationError):
         return ''
 
@@ -30,4 +36,6 @@ def admin_image(previous, current, *, allow_unchanged=False, backend_admin=False
 if __name__ == '__main__':
     print(admin_image(Path(sys.argv[1]), Path(sys.argv[2]),
                       allow_unchanged='--allow-unchanged' in sys.argv[3:],
-                      backend_admin='--backend-admin' in sys.argv[3:]))
+                      backend_admin='--backend-admin' in sys.argv[3:],
+                      admin_shop='--admin-shop' in sys.argv[3:],
+                      select_shop='--shop-image' in sys.argv[3:]))

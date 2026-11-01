@@ -17,6 +17,11 @@ with open(os.environ["DOCKER_CALLS"], "a") as out:
 if os.environ.get('EXPECT_ADMIN_LITERAL') and ('pull' in args or 'up' in args):
     assert args[-1] == 'admin-app'
     assert os.environ.get('ADMIN_APP_IMAGE') == json.loads(os.environ['TEST_IMAGE_REFS'])['admin-app']
+if os.environ.get('EXPECT_FRONTEND_LITERALS') and ('pull' in args or 'up' in args):
+    assert args[-2:] == ['admin-app', 'shop']
+    refs = json.loads(os.environ['TEST_IMAGE_REFS'])
+    assert os.environ.get('ADMIN_APP_IMAGE') == refs['admin-app']
+    assert os.environ.get('SHOP_IMAGE') == refs['shop']
 services = ['backend', 'booking-sms-reminders', 'shop', 'admin-app', 'public-site', 'blog', 'caddy', 'postgres']
 container_ids = {hashlib.sha256(name.encode()).hexdigest(): name for name in services}
 if args[:1] == ['run'] and args[-1] == 'import os; print(os.geteuid())':
@@ -289,6 +294,75 @@ class BackupRestoreTests(unittest.TestCase):
         path.write_text(path.read_text().replace('backend_image@sha256:' + '1' * 64,
                                                 'backend_image@sha256:' + '7' * 64))
         (self.release_root / 'versions/deploy.scope').write_text('backend-admin\n')
+
+    def prepare_admin_shop(self):
+        self.prepare_admin_only()
+        self.env.pop('EXPECT_ADMIN_LITERAL')
+        path = self.previous / 'versions/production.env'
+        path.write_text(path.read_text().replace('shop_image@sha256:' + '2' * 64,
+                                                'shop_image@sha256:' + '8' * 64))
+        (self.release_root / 'versions/deploy.scope').write_text('admin-shop\n')
+        self.env['EXPECT_FRONTEND_LITERALS'] = '1'
+
+    def test_admin_shop_updates_only_explicit_images_without_writers(self):
+        self.prepare_admin_shop()
+        self.env.update(ADMIN_APP_IMAGE='untrusted-admin', SHOP_IMAGE='untrusted-shop')
+        result = self.run_script('deploy.sh')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.operations()
+        self.assertEqual([c[c.index('pull'):] for c in calls if 'pull' in c], [['pull', 'admin-app', 'shop']])
+        self.assertEqual([c[c.index('up'):] for c in calls if 'up' in c], [['up', '-d', '--no-deps', 'admin-app', 'shop']])
+        self.assertFalse(any('stop' in c or 'run' in c for c in calls))
+        self.assertEqual((self.path / 'current').resolve(), self.release_root)
+        self.assertFalse((self.path / 'backend-recovery-required').exists())
+
+    def test_admin_shop_refuses_backend_other_pins_and_config_before_docker(self):
+        for mutation in ('BACKEND_IMAGE', 'PUBLIC_SITE_IMAGE', 'BLOG_IMAGE', 'CADDY_IMAGE',
+                         'POSTGRES_IMAGE', 'duplicate-shop', 'missing-pins', 'compose', 'caddy'):
+            with self.subTest(mutation=mutation):
+                test = BackupRestoreTests()
+                test.setUp()
+                self.addCleanup(test.doCleanups)
+                test.prepare_admin_shop()
+                pins = test.release_root / 'versions/production.env'
+                if mutation.endswith('_IMAGE'):
+                    pins.write_text('\n'.join(line+'-changed' if line.startswith(mutation+'=') else line for line in pins.read_text().splitlines())+'\n')
+                elif mutation == 'duplicate-shop':
+                    pins.write_text(pins.read_text()+'SHOP_IMAGE=invalid\n')
+                elif mutation == 'missing-pins':
+                    pins.unlink()
+                else:
+                    (test.previous / ('docker-compose.prod.yml' if mutation == 'compose' else 'caddy/Caddyfile')).write_text('changed')
+                self.assertNotEqual(test.run_script('deploy.sh').returncode, 0)
+                self.assertFalse(test.calls.exists())
+
+    def test_admin_shop_noop_and_single_app_retries_never_broaden_scope(self):
+        for mode in ('noop', 'admin-only', 'shop-only'):
+            with self.subTest(mode=mode):
+                test = BackupRestoreTests()
+                test.setUp()
+                self.addCleanup(test.doCleanups)
+                test.prepare_admin_shop()
+                path = test.previous / 'versions/production.env'
+                if mode in ('noop', 'admin-only'):
+                    path.write_text(path.read_text().replace('shop_image@sha256:'+'8'*64, 'shop_image@sha256:'+'2'*64))
+                if mode in ('noop', 'shop-only'):
+                    path.write_text(path.read_text().replace('admin_app_image@sha256:'+'6'*64, 'admin_app_image@sha256:'+'3'*64))
+                result = test.run_script('deploy.sh')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertFalse(any('run' in c or 'stop' in c for c in test.operations()))
+
+    def test_admin_shop_failures_preserve_current_and_never_stop_backend(self):
+        for failure in ('FAIL_PULL', 'FAIL_SCHEMA', 'FAIL_UP', 'FAIL_HEALTH', 'FAIL_OWNER', 'FAIL_IMAGE_LOOKUP'):
+            with self.subTest(failure=failure):
+                test = BackupRestoreTests()
+                test.setUp()
+                self.addCleanup(test.doCleanups)
+                test.prepare_admin_shop()
+                test.env[failure] = '1'
+                self.assertNotEqual(test.run_script('deploy.sh').returncode, 0)
+                self.assertEqual((test.path / 'current').resolve(), test.previous)
+                self.assertFalse(any('run' in c or 'stop' in c for c in test.operations()))
 
     def test_backend_admin_keeps_backup_migration_and_acceptance_gates_scoped(self):
         self.prepare_backend_admin()
