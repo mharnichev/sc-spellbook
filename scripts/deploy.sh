@@ -34,6 +34,7 @@ BACKEND_CHANGED=false
 export BACKEND_IMAGE="${next_backend}"
 REQUIRED_SCOPE=""
 admin_only_image=""
+shop_only_image=""
 if [[ -f "${ROOT_DIR}/versions/deploy.scope" ]]; then
   REQUIRED_SCOPE="$(cat "${ROOT_DIR}/versions/deploy.scope")"
   case "${REQUIRED_SCOPE}" in
@@ -41,6 +42,11 @@ if [[ -f "${ROOT_DIR}/versions/deploy.scope" ]]; then
       admin_only_image="$(python3 "${ROOT_DIR}/scripts/admin-only-release.py" "${PREVIOUS_RELEASE}" "${ROOT_DIR}" --allow-unchanged)" ;;
     backend-admin)
       admin_only_image="$(python3 "${ROOT_DIR}/scripts/admin-only-release.py" "${PREVIOUS_RELEASE}" "${ROOT_DIR}" --backend-admin)" ;;
+    admin-shop)
+      admin_only_image="$(python3 "${ROOT_DIR}/scripts/admin-only-release.py" "${PREVIOUS_RELEASE}" "${ROOT_DIR}" --admin-shop --allow-unchanged)"
+      shop_only_image="$(python3 "${ROOT_DIR}/scripts/admin-only-release.py" "${PREVIOUS_RELEASE}" "${ROOT_DIR}" --admin-shop --allow-unchanged --shop-image)"
+      [[ -n "${shop_only_image}" ]] || { echo 'Required Shop scope refused.' >&2; exit 1; }
+      export SHOP_IMAGE="${shop_only_image}" ;;
     *) echo 'Unsupported required deployment scope.' >&2; exit 1 ;;
   esac
   [[ -n "${admin_only_image}" ]] || { echo 'Required scope refused: other pins or shared configuration differ or are unavailable.' >&2; exit 1; }
@@ -132,7 +138,11 @@ else
   fi
   if [[ -n "${admin_only_image}" ]]; then
     export ADMIN_APP_IMAGE="${admin_only_image}"
-    compose pull admin-app
+    if [[ "${REQUIRED_SCOPE}" == admin-shop ]]; then
+      compose pull admin-app shop
+    else
+      compose pull admin-app
+    fi
   else
     compose pull public-site blog admin-app shop caddy
   fi
@@ -140,7 +150,11 @@ else
   compose exec -T backend python -m app.core.migration_readiness
   if [[ -n "${admin_only_image}" ]]; then
     # Caddy can keep its previous release mount: its bytes and Compose are identical.
-    compose up -d --no-deps admin-app
+    if [[ "${REQUIRED_SCOPE}" == admin-shop ]]; then
+      compose up -d --no-deps admin-app shop
+    else
+      compose up -d --no-deps admin-app
+    fi
   else
     compose up -d --no-deps public-site blog admin-app shop caddy
   fi
