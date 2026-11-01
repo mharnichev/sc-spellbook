@@ -5,6 +5,23 @@ Backoffice and Shop residuals. Source and immutable image pins are finalized
 after hosted Linux build gates. No backend, migration, ingredient, account,
 session, pricing, provider, public launch or legal-terms changes are included.
 
+Final frontend source: 98cbab27fb8ca9a58b2d5b8045e3219958d1b70b (FE PR 41).
+Backoffice image CI: 41329618483, successful. Shop image CI: 41329613416,
+attempt 2, successful on the same source without credential or ACL changes.
+Attempt 1 passed build, unit, browser, payment and offline smoke gates but
+its registry publication exited with `denied`. An untagged manifest existed
+and was readable; the intended tag did not exist. A single full rerun after
+package creation succeeded. The registry did not disclose the underlying
+cause; this is not proof of a code defect or a permission-policy fix.
+
+Shop final CI passed 299 unit tests, mounted Chromium and WebKit interactions,
+12 mocked payment scenarios against the exact built image, and offline
+asset/SSR 404/noindex smoke. Backoffice passed 656 unit tests, 15 mounted
+ARIA checks, 10 selector checks, type checking and production build. Both
+images must be pulled and their platform/revision checked on production
+before activation. Use only the immutable final pins in production.env,
+not any untagged or earlier candidate image.
+
 The required `admin-shop` scope accepts changes only to ADMIN_APP_IMAGE and
 SHOP_IMAGE. Existing strict immutable pin parsing and identical Compose/Caddy
 bytes are mandatory before any Docker mutation. Other changed/missing/invalid
