@@ -22,6 +22,11 @@ if os.environ.get('EXPECT_FRONTEND_LITERALS') and ('pull' in args or 'up' in arg
     refs = json.loads(os.environ['TEST_IMAGE_REFS'])
     assert os.environ.get('ADMIN_APP_IMAGE') == refs['admin-app']
     assert os.environ.get('SHOP_IMAGE') == refs['shop']
+if os.environ.get('EXPECT_SHOP_INGRESS_LITERALS') and ('pull' in args or 'up' in args):
+    assert args[-2:] == ['shop', 'caddy']
+    refs = json.loads(os.environ['TEST_IMAGE_REFS'])
+    assert os.environ.get('SHOP_IMAGE') == refs['shop']
+    assert os.environ.get('CADDY_IMAGE') == refs['caddy']
 services = ['backend', 'booking-sms-reminders', 'shop', 'admin-app', 'public-site', 'blog', 'caddy', 'postgres']
 container_ids = {hashlib.sha256(name.encode()).hexdigest(): name for name in services}
 if args[:1] == ['run'] and args[-1] == 'import os; print(os.geteuid())':
@@ -363,6 +368,89 @@ class BackupRestoreTests(unittest.TestCase):
                 self.assertNotEqual(test.run_script('deploy.sh').returncode, 0)
                 self.assertEqual((test.path / 'current').resolve(), test.previous)
                 self.assertFalse(any('run' in c or 'stop' in c for c in test.operations()))
+
+    def prepare_shop_ingress(self):
+        self.prepare_admin_shop()
+        self.env.pop('EXPECT_FRONTEND_LITERALS')
+        pins = self.previous / 'versions/production.env'
+        pins.write_text(pins.read_text().replace('admin_app_image@sha256:'+'6'*64, 'admin_app_image@sha256:'+'3'*64))
+        before = '\t@shop_api path /api/v1/public/products\n'
+        (self.previous / 'caddy/Caddyfile').write_text(before)
+        (self.release_root / 'caddy/Caddyfile').write_text(before.rstrip('\n')+' /api/v1/public/shop-promotions/quote\n')
+        (self.release_root / 'versions/deploy.scope').write_text('shop-ingress\n')
+        self.env['EXPECT_SHOP_INGRESS_LITERALS'] = '1'
+
+    def test_shop_ingress_only_replaces_shop_caddy_with_literal_pins(self):
+        self.prepare_shop_ingress()
+        self.env.update(SHOP_IMAGE='untrusted-shop', CADDY_IMAGE='untrusted-caddy')
+        result = self.run_script('deploy.sh')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.operations()
+        self.assertEqual([c[c.index('pull'):] for c in calls if 'pull' in c], [['pull', 'shop', 'caddy']])
+        self.assertEqual([c[c.index('up'):] for c in calls if 'up' in c], [['up', '-d', '--no-deps', 'shop', 'caddy']])
+        self.assertFalse(any('run' in c or 'stop' in c for c in calls))
+        self.assertEqual((self.path / 'current').resolve(), self.release_root)
+
+    def test_shop_ingress_rejects_other_pins_and_unrelated_ingress_changes_before_docker(self):
+        mutations = ['BACKEND_IMAGE', 'ADMIN_APP_IMAGE', 'PUBLIC_SITE_IMAGE', 'BLOG_IMAGE', 'CADDY_IMAGE', 'POSTGRES_IMAGE',
+                     'compose', 'extra-caddy', 'missing-quote', 'duplicate-quote', 'quote-in-comment', 'wildcard',
+                     'insert-before-existing-wildcard', 'identical-wildcard-retry']
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                case = BackupRestoreTests()
+                case.setUp()
+                self.addCleanup(case.doCleanups)
+                case.prepare_shop_ingress()
+                pins = case.release_root / 'versions/production.env'
+                caddy = case.release_root / 'caddy/Caddyfile'
+                if mutation.endswith('_IMAGE'):
+                    pins.write_text('\n'.join(mutation+'=local/changed@sha256:'+'9'*64 if line.startswith(mutation+'=') else line for line in pins.read_text().splitlines())+'\n')
+                elif mutation == 'compose':
+                    (case.release_root / 'docker-compose.prod.yml').write_text('changed')
+                elif mutation == 'extra-caddy':
+                    caddy.write_text(caddy.read_text()+'# unrelated change\n')
+                elif mutation == 'missing-quote':
+                    caddy.write_text((case.previous / 'caddy/Caddyfile').read_text())
+                elif mutation == 'duplicate-quote':
+                    caddy.write_text(caddy.read_text()+'# /api/v1/public/shop-promotions/quote\n')
+                elif mutation == 'quote-in-comment':
+                    caddy.write_text((case.previous / 'caddy/Caddyfile').read_text()+'# /api/v1/public/shop-promotions/quote\n')
+                elif mutation in ('insert-before-existing-wildcard', 'identical-wildcard-retry'):
+                    before = '\t@shop_api path /api/v1/public/*\n'
+                    after = before.replace('/*', ' /api/v1/public/shop-promotions/quote/*')
+                    (case.previous / 'caddy/Caddyfile').write_text(after if mutation == 'identical-wildcard-retry' else before)
+                    caddy.write_text(after)
+                else:
+                    caddy.write_text(caddy.read_text().replace('/shop-promotions/quote', '/shop-promotions/*'))
+                self.assertNotEqual(case.run_script('deploy.sh').returncode, 0)
+                self.assertFalse(case.calls.exists())
+
+    def test_shop_ingress_retry_stays_scoped_after_partial_or_complete_activation(self):
+        for quote_already_present, same_image in ((True, False), (False, True), (True, True)):
+            with self.subTest(quote=quote_already_present, same_image=same_image):
+                case = BackupRestoreTests()
+                case.setUp()
+                self.addCleanup(case.doCleanups)
+                case.prepare_shop_ingress()
+                if quote_already_present:
+                    shutil.copy2(case.release_root / 'caddy/Caddyfile', case.previous / 'caddy/Caddyfile')
+                if same_image:
+                    case.same_backend()
+                result = case.run_script('deploy.sh')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertFalse(any('run' in c or 'stop' in c for c in case.operations()))
+
+    def test_shop_ingress_failures_keep_pointer_and_never_stop_writers(self):
+        for failure in ('FAIL_PULL', 'FAIL_SCHEMA', 'FAIL_UP', 'FAIL_HEALTH', 'FAIL_OWNER', 'FAIL_IMAGE_LOOKUP'):
+            with self.subTest(failure=failure):
+                case = BackupRestoreTests()
+                case.setUp()
+                self.addCleanup(case.doCleanups)
+                case.prepare_shop_ingress()
+                case.env[failure] = '1'
+                self.assertNotEqual(case.run_script('deploy.sh').returncode, 0)
+                self.assertEqual((case.path / 'current').resolve(), case.previous)
+                self.assertFalse(any('run' in c or 'stop' in c for c in case.operations()))
 
     def test_backend_admin_keeps_backup_migration_and_acceptance_gates_scoped(self):
         self.prepare_backend_admin()

@@ -47,6 +47,12 @@ if [[ -f "${ROOT_DIR}/versions/deploy.scope" ]]; then
       shop_only_image="$(python3 "${ROOT_DIR}/scripts/admin-only-release.py" "${PREVIOUS_RELEASE}" "${ROOT_DIR}" --admin-shop --allow-unchanged --shop-image)"
       [[ -n "${shop_only_image}" ]] || { echo 'Required Shop scope refused.' >&2; exit 1; }
       export SHOP_IMAGE="${shop_only_image}" ;;
+    shop-ingress)
+      admin_only_image="$(python3 "${ROOT_DIR}/scripts/admin-only-release.py" "${PREVIOUS_RELEASE}" "${ROOT_DIR}" --shop-ingress --allow-unchanged)"
+      shop_only_image="$(python3 "${ROOT_DIR}/scripts/admin-only-release.py" "${PREVIOUS_RELEASE}" "${ROOT_DIR}" --shop-ingress --allow-unchanged --shop-image)"
+      caddy_only_image="$(python3 "${ROOT_DIR}/scripts/admin-only-release.py" "${PREVIOUS_RELEASE}" "${ROOT_DIR}" --shop-ingress --allow-unchanged --caddy-image)"
+      [[ -n "${shop_only_image}" && -n "${caddy_only_image}" ]] || { echo 'Required Shop ingress scope refused.' >&2; exit 1; }
+      export SHOP_IMAGE="${shop_only_image}" CADDY_IMAGE="${caddy_only_image}" ;;
     *) echo 'Unsupported required deployment scope.' >&2; exit 1 ;;
   esac
   [[ -n "${admin_only_image}" ]] || { echo 'Required scope refused: other pins or shared configuration differ or are unavailable.' >&2; exit 1; }
@@ -138,7 +144,9 @@ else
   fi
   if [[ -n "${admin_only_image}" ]]; then
     export ADMIN_APP_IMAGE="${admin_only_image}"
-    if [[ "${REQUIRED_SCOPE}" == admin-shop ]]; then
+    if [[ "${REQUIRED_SCOPE}" == shop-ingress ]]; then
+      compose pull shop caddy
+    elif [[ "${REQUIRED_SCOPE}" == admin-shop ]]; then
       compose pull admin-app shop
     else
       compose pull admin-app
@@ -149,8 +157,10 @@ else
   # Do not recreate API/reminders or apply backend config on frontend-only releases.
   compose exec -T backend python -m app.core.migration_readiness
   if [[ -n "${admin_only_image}" ]]; then
-    # Caddy can keep its previous release mount: its bytes and Compose are identical.
-    if [[ "${REQUIRED_SCOPE}" == admin-shop ]]; then
+    # Only Shop ingress changes require replacing Caddy's release mount.
+    if [[ "${REQUIRED_SCOPE}" == shop-ingress ]]; then
+      compose up -d --no-deps shop caddy
+    elif [[ "${REQUIRED_SCOPE}" == admin-shop ]]; then
       compose up -d --no-deps admin-app shop
     else
       compose up -d --no-deps admin-app
