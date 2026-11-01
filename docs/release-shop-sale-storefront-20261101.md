@@ -1,6 +1,19 @@
 # Shop Sale Storefront And Quote Ingress
 
 Activate only after the backward-compatible Sale API release is accepted.
+Backend is accepted at /opt/soulcuts/releases/20261101T205117Z-d8c95e2,
+source 781215ded85b7374a37d5138dee3df906cc74479; schema head remains 0144.
+Paired backup integrity and authenticated 15-scheduler/zero-queue watch were
+verified before manual acceptance. No environment values were changed.
+
+Shop source: dd33ecc3845b4bd12170872fdbb5003a2e964dd1 (FE PR 42).
+Image CI 41350197487 passed: 349 units, mounted Chromium/WebKit, journal smoke,
+27 mocked built-image browser scenarios, offline asset/SSR/noindex smoke and
+immutable publication. Runtime and ingress independent reviews have no remaining
+P1/P2 findings. Non-loopback browser HTTP(S) is denied by default; only the
+exact synthetic bank navigation is fulfilled locally. Earlier red candidate
+evidence is superseded, not waived. Production acceptance never submits orders.
+
 This scope may update only SHOP_IMAGE and the exact public quote path in the
 existing Shop direct-API matcher. Compose and all other image pins must remain
 identical. Exact path-token membership rejects wildcard insertion, including
