@@ -321,6 +321,46 @@ class BackupRestoreTests(unittest.TestCase):
         self.assertEqual((self.path / 'current').resolve(), self.release_root)
         self.assertFalse((self.path / 'backend-recovery-required').exists())
 
+    def test_admin_shop_allows_only_exact_shop_runtime_override_removal(self):
+        token = '      NUXT_PUBLIC_DOBRODESK_ENABLED: "false"\n'
+        for mutation in ('exact', 'unchanged-pins', 'other-scope', 'duplicate',
+                         'true-literal', 'other-compose', 'other-service', 'caddy'):
+            with self.subTest(mutation=mutation):
+                test = BackupRestoreTests()
+                test.setUp()
+                self.addCleanup(test.doCleanups)
+                test.prepare_admin_shop()
+                old = test.previous / 'docker-compose.prod.yml'
+                new = test.release_root / 'docker-compose.prod.yml'
+                before, shop = old.read_text().split('\n  shop:\n', 1)
+                old.write_text(before + '\n  shop:\n' + shop.replace(
+                    '    environment:\n', '    environment:\n' + token, 1))
+                if mutation == 'unchanged-pins':
+                    shutil.copy2(test.release_root / 'versions/production.env',
+                                 test.previous / 'versions/production.env')
+                elif mutation == 'other-scope':
+                    (test.release_root / 'versions/deploy.scope').write_text('admin-app\n')
+                elif mutation == 'duplicate':
+                    old.write_text(old.read_text().replace(token, token * 2))
+                elif mutation == 'true-literal':
+                    old.write_text(old.read_text().replace(token, token.replace('false', 'true')))
+                elif mutation == 'other-compose':
+                    new.write_text(new.read_text() + '# unrelated change\n')
+                elif mutation == 'other-service':
+                    old.write_text(old.read_text().replace(token, '').replace(
+                        '\n  backend:\n', '\n  backend:\n' + token, 1))
+                elif mutation == 'caddy':
+                    (test.release_root / 'caddy/Caddyfile').write_text('changed')
+                result = test.run_script('deploy.sh')
+                if mutation in ('exact', 'unchanged-pins'):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertFalse(any('stop' in c or 'run' in c for c in test.operations()))
+                    self.assertEqual([c[c.index('up'):] for c in test.operations() if 'up' in c],
+                                     [['up', '-d', '--no-deps', 'admin-app', 'shop']])
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse(test.calls.exists())
+
     def test_admin_shop_refuses_backend_other_pins_and_config_before_docker(self):
         for mutation in ('BACKEND_IMAGE', 'PUBLIC_SITE_IMAGE', 'BLOG_IMAGE', 'CADDY_IMAGE',
                          'POSTGRES_IMAGE', 'duplicate-shop', 'missing-pins', 'compose', 'caddy'):
