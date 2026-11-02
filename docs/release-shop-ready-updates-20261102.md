@@ -1,12 +1,13 @@
 # Shop ready updates release
 
-Frontend source: `f9fad1f5ce0ff8237f465ce20a3019c61cfe6e08`.
-Frontend PR: https://github.com/mharnichev/sc-fe/pull/46
-Image CI: https://github.com/mharnichev/sc-fe/actions/runs/41453185975 (SUCCESS).
-Immutable image: `ghcr.io/mharnichev/sc-fe/shop-residual-20261101@sha256:d767a007489aad64607f08687a1bcc8957750ca625125699a2da7db9903b11d1`.
+Frontend source: `47af82e60b2f730751bed1dc0e624ed0a8f0b3a2`.
+Frontend PRs: https://github.com/mharnichev/sc-fe/pull/46 and https://github.com/mharnichev/sc-fe/pull/47
+Image CI: https://github.com/mharnichev/sc-fe/actions/runs/41455197066 (SUCCESS).
+Immutable image: `ghcr.io/mharnichev/sc-fe/shop-residual-20261101@sha256:e357b6d5b735b67e91eb7f57f3b579b4ffaa4122700ccd5eed724691aa3f6e57`.
 
 Selective reconciliation onto current main, not a copy of the stale original:
-- Compact idle SKU spacing, expanded only for actual desktop hover.
+- No action-row padding in idle or hover. SKU uses its own clipped normal-flow
+  line, expands only for actual desktop hover, and honors reduced motion.
 - Product description uses BaseAccordion: ten rendered lines below1280px,
   short/desktop full content, responsive/font/localized measurement, inert
   collapsed previews, animation cancellation and reduced motion.
