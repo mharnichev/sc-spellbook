@@ -33,6 +33,13 @@ def admin_image(previous, current, *, allow_unchanged=False, backend_admin=False
             return ''
         for name in ('docker-compose.prod.yml', 'caddy/Caddyfile'):
             before, after = (previous / name).read_bytes(), (current / name).read_bytes()
+            runtime_override = b'      NUXT_PUBLIC_DOBRODESK_ENABLED: "false"\n'
+            shop_block = before.partition(b'\n  shop:\n')[2].partition(b'\n  backend:\n')[0]
+            if (admin_shop and name == 'docker-compose.prod.yml'
+                    and before.count(runtime_override) == 1
+                    and runtime_override in shop_block
+                    and after == before.replace(runtime_override, b'', 1)):
+                continue
             if shop_ingress and name == 'caddy/Caddyfile':
                 token = b' /api/v1/public/shop-promotions/quote'
                 matchers = [line for line in after.splitlines() if line.startswith(b'\t@shop_api path ')]
