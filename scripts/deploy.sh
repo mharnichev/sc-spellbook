@@ -35,6 +35,7 @@ export BACKEND_IMAGE="${next_backend}"
 REQUIRED_SCOPE=""
 admin_only_image=""
 shop_only_image=""
+public_only_image=""
 if [[ -f "${ROOT_DIR}/versions/deploy.scope" ]]; then
   REQUIRED_SCOPE="$(cat "${ROOT_DIR}/versions/deploy.scope")"
   case "${REQUIRED_SCOPE}" in
@@ -42,6 +43,11 @@ if [[ -f "${ROOT_DIR}/versions/deploy.scope" ]]; then
       admin_only_image="$(python3 "${ROOT_DIR}/scripts/admin-only-release.py" "${PREVIOUS_RELEASE}" "${ROOT_DIR}" --allow-unchanged)" ;;
     backend-admin)
       admin_only_image="$(python3 "${ROOT_DIR}/scripts/admin-only-release.py" "${PREVIOUS_RELEASE}" "${ROOT_DIR}" --backend-admin)" ;;
+    public-admin)
+      admin_only_image="$(python3 "${ROOT_DIR}/scripts/admin-only-release.py" "${PREVIOUS_RELEASE}" "${ROOT_DIR}" --public-admin --allow-unchanged)"
+      public_only_image="$(python3 "${ROOT_DIR}/scripts/admin-only-release.py" "${PREVIOUS_RELEASE}" "${ROOT_DIR}" --public-admin --allow-unchanged --public-image)"
+      [[ -n "${public_only_image}" ]] || { echo 'Required public/admin scope refused.' >&2; exit 1; }
+      export PUBLIC_SITE_IMAGE="${public_only_image}" ;;
     admin-shop)
       admin_only_image="$(python3 "${ROOT_DIR}/scripts/admin-only-release.py" "${PREVIOUS_RELEASE}" "${ROOT_DIR}" --admin-shop --allow-unchanged)"
       shop_only_image="$(python3 "${ROOT_DIR}/scripts/admin-only-release.py" "${PREVIOUS_RELEASE}" "${ROOT_DIR}" --admin-shop --allow-unchanged --shop-image)"
@@ -113,7 +119,7 @@ compose --profile release run --rm --no-deps --entrypoint python migrate -c \
     import app.services.checkout_reminder_smtp
     from alembic.config import Config
     from alembic.script import ScriptDirectory
-    if ScriptDirectory.from_config(Config("alembic.ini")).get_heads() != ["0144_master_rewards"]:
+    if ScriptDirectory.from_config(Config("alembic.ini")).get_heads() != ["0145_booking_funnel_observations"]:
         raise RuntimeError("Unexpected migration head")
 except Exception:
     raise SystemExit("Backend release preflight failed: settings, modules or schema contract unavailable") from None'
@@ -144,7 +150,9 @@ else
   fi
   if [[ -n "${admin_only_image}" ]]; then
     export ADMIN_APP_IMAGE="${admin_only_image}"
-    if [[ "${REQUIRED_SCOPE}" == shop-ingress ]]; then
+    if [[ "${REQUIRED_SCOPE}" == public-admin ]]; then
+      compose pull public-site admin-app
+    elif [[ "${REQUIRED_SCOPE}" == shop-ingress ]]; then
       compose pull shop caddy
     elif [[ "${REQUIRED_SCOPE}" == admin-shop ]]; then
       compose pull admin-app shop
@@ -158,7 +166,9 @@ else
   compose exec -T backend python -m app.core.migration_readiness
   if [[ -n "${admin_only_image}" ]]; then
     # Only Shop ingress changes require replacing Caddy's release mount.
-    if [[ "${REQUIRED_SCOPE}" == shop-ingress ]]; then
+    if [[ "${REQUIRED_SCOPE}" == public-admin ]]; then
+      compose up -d --no-deps public-site admin-app
+    elif [[ "${REQUIRED_SCOPE}" == shop-ingress ]]; then
       compose up -d --no-deps shop caddy
     elif [[ "${REQUIRED_SCOPE}" == admin-shop ]]; then
       compose up -d --no-deps admin-app shop

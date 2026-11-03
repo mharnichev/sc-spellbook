@@ -22,6 +22,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Use pinned Python test runtime
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Validate backup and deployment safeguards
         run: |
           for script in scripts/deploy.sh scripts/restore-db.sh scripts/backup-db.sh scripts/backup-files.sh scripts/release-lock.sh scripts/verify-background-owner.sh scripts/accept-shop-pilot.sh scripts/rollback.sh scripts/run-english-backfill.sh scripts/run-shop-online-activation.sh scripts/run-shop-online-compose-recovery.sh scripts/run-shop-content-backfill.sh; do

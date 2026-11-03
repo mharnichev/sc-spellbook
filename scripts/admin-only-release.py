@@ -11,16 +11,20 @@ spec.loader.exec_module(images)
 
 def admin_image(previous, current, *, allow_unchanged=False, backend_admin=False,
                 admin_shop=False, select_shop=False, shop_ingress=False,
-                select_caddy=False):
+                select_caddy=False, public_admin=False, select_public=False):
     try:
         old = images.pins(previous / 'versions/production.env')
         new = images.pins(current / 'versions/production.env')
         changed = {key for key in new if new[key] != old[key]}
-        if sum((backend_admin, admin_shop, shop_ingress)) > 1 or (select_shop and select_caddy):
+        if sum((backend_admin, admin_shop, shop_ingress, public_admin)) > 1 or sum((select_shop, select_caddy, select_public)) > 1:
             return ''
-        if select_shop and not (admin_shop or shop_ingress) or select_caddy and not shop_ingress:
+        if (select_shop and not (admin_shop or shop_ingress)
+                or select_caddy and not shop_ingress or select_public and not public_admin):
             return ''
-        if shop_ingress:
+        if public_admin:
+            if changed - {'PUBLIC_SITE_IMAGE', 'ADMIN_APP_IMAGE'} or (not changed and not allow_unchanged):
+                return ''
+        elif shop_ingress:
             if changed - {'SHOP_IMAGE'} or (not changed and not allow_unchanged):
                 return ''
         elif admin_shop:
@@ -49,7 +53,7 @@ def admin_image(previous, current, *, allow_unchanged=False, backend_admin=False
                     return ''
             elif before != after:
                 return ''
-        return new['CADDY_IMAGE' if select_caddy else 'SHOP_IMAGE' if select_shop else 'ADMIN_APP_IMAGE']
+        return new['PUBLIC_SITE_IMAGE' if select_public else 'CADDY_IMAGE' if select_caddy else 'SHOP_IMAGE' if select_shop else 'ADMIN_APP_IMAGE']
     except (OSError, images.VerificationError):
         return ''
 
@@ -61,4 +65,6 @@ if __name__ == '__main__':
                       admin_shop='--admin-shop' in sys.argv[3:],
                       shop_ingress='--shop-ingress' in sys.argv[3:],
                       select_caddy='--caddy-image' in sys.argv[3:],
+                      public_admin='--public-admin' in sys.argv[3:],
+                      select_public='--public-image' in sys.argv[3:],
                       select_shop='--shop-image' in sys.argv[3:]))

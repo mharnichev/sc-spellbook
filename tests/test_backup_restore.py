@@ -22,6 +22,11 @@ if os.environ.get('EXPECT_FRONTEND_LITERALS') and ('pull' in args or 'up' in arg
     refs = json.loads(os.environ['TEST_IMAGE_REFS'])
     assert os.environ.get('ADMIN_APP_IMAGE') == refs['admin-app']
     assert os.environ.get('SHOP_IMAGE') == refs['shop']
+if os.environ.get('EXPECT_PUBLIC_ADMIN_LITERALS') and ('pull' in args or 'up' in args):
+    assert args[-2:] == ['public-site', 'admin-app']
+    refs = json.loads(os.environ['TEST_IMAGE_REFS'])
+    assert os.environ.get('PUBLIC_SITE_IMAGE') == refs['public-site']
+    assert os.environ.get('ADMIN_APP_IMAGE') == refs['admin-app']
 if os.environ.get('EXPECT_SHOP_INGRESS_LITERALS') and ('pull' in args or 'up' in args):
     assert args[-2:] == ['shop', 'caddy']
     refs = json.loads(os.environ['TEST_IMAGE_REFS'])
@@ -299,6 +304,144 @@ class BackupRestoreTests(unittest.TestCase):
         path.write_text(path.read_text().replace('backend_image@sha256:' + '1' * 64,
                                                 'backend_image@sha256:' + '7' * 64))
         (self.release_root / 'versions/deploy.scope').write_text('backend-admin\n')
+
+    def prepare_public_admin(self):
+        self.prepare_admin_only()
+        self.env.pop('EXPECT_ADMIN_LITERAL')
+        path = self.previous / 'versions/production.env'
+        path.write_text('\n'.join('PUBLIC_SITE_IMAGE=local/public-site@sha256:' + '9' * 64
+                                 if line.startswith('PUBLIC_SITE_IMAGE=') else line
+                                 for line in path.read_text().splitlines()) + '\n')
+        (self.release_root / 'versions/deploy.scope').write_text('public-admin\n')
+        self.env['EXPECT_PUBLIC_ADMIN_LITERALS'] = '1'
+
+    def test_public_admin_only_pulls_and_updates_its_literal_images(self):
+        self.prepare_public_admin()
+        self.env.update(PUBLIC_SITE_IMAGE='untrusted-public', ADMIN_APP_IMAGE='untrusted-admin',
+                        SHOP_IMAGE='untrusted-shop', BLOG_IMAGE='untrusted-blog')
+        result = self.run_script('deploy.sh')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.operations()
+        self.assertEqual([c[c.index('pull'):] for c in calls if 'pull' in c], [['pull', 'public-site', 'admin-app']])
+        self.assertEqual([c[c.index('up'):] for c in calls if 'up' in c], [['up', '-d', '--no-deps', 'public-site', 'admin-app']])
+        self.assertFalse(any('stop' in c or 'run' in c or any('pg_dump' in a for a in c) for c in calls))
+        self.assertFalse((self.path / 'backend-recovery-required').exists())
+        self.assertFalse((self.path / 'backups').exists())
+        self.assertEqual((self.path / 'current').resolve(), self.release_root)
+
+    def test_public_admin_rejects_other_pins_and_shared_configuration_before_docker(self):
+        for mutation in ('BACKEND_IMAGE', 'SHOP_IMAGE', 'BLOG_IMAGE', 'CADDY_IMAGE',
+                         'POSTGRES_IMAGE', 'duplicate-public', 'missing-public', 'compose', 'caddy', 'missing-caddy'):
+            with self.subTest(mutation=mutation):
+                test = BackupRestoreTests()
+                test.setUp()
+                self.addCleanup(test.doCleanups)
+                test.prepare_public_admin()
+                pins = test.release_root / 'versions/production.env'
+                if mutation.endswith('_IMAGE'):
+                    pins.write_text('\n'.join(line.split('@sha256:', 1)[0] + '@sha256:' + 'a' * 64 if line.startswith(mutation + '=') else line
+                                              for line in pins.read_text().splitlines()) + '\n')
+                elif mutation == 'duplicate-public':
+                    pins.write_text(pins.read_text() + 'PUBLIC_SITE_IMAGE=invalid\n')
+                elif mutation == 'missing-public':
+                    pins.write_text('\n'.join(line for line in pins.read_text().splitlines()
+                                              if not line.startswith('PUBLIC_SITE_IMAGE=')) + '\n')
+                elif mutation == 'missing-caddy':
+                    (test.previous / 'caddy/Caddyfile').unlink()
+                else:
+                    (test.previous / ('docker-compose.prod.yml' if mutation == 'compose' else 'caddy/Caddyfile')).write_text('changed')
+                self.assertNotEqual(test.run_script('deploy.sh').returncode, 0)
+                self.assertFalse(test.calls.exists())
+
+    def test_public_admin_retry_and_single_image_updates_stay_narrow(self):
+        for mode in ('noop', 'admin-only', 'public-only'):
+            with self.subTest(mode=mode):
+                test = BackupRestoreTests()
+                test.setUp()
+                self.addCleanup(test.doCleanups)
+                test.prepare_public_admin()
+                old = test.previous / 'versions/production.env'
+                new = dict(line.split('=', 1) for line in (test.release_root / 'versions/production.env').read_text().splitlines())
+                unchanged = {'PUBLIC_SITE_IMAGE', 'ADMIN_APP_IMAGE'} if mode == 'noop' else {'PUBLIC_SITE_IMAGE' if mode == 'admin-only' else 'ADMIN_APP_IMAGE'}
+                old.write_text('\n'.join(key + '=' + (new[key] if key in unchanged else value)
+                                         for key, value in (line.split('=', 1) for line in old.read_text().splitlines())) + '\n')
+                result = test.run_script('deploy.sh')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual([c[c.index('up'):] for c in test.operations() if 'up' in c],
+                                 [['up', '-d', '--no-deps', 'public-site', 'admin-app']])
+                self.assertFalse(any('run' in c or 'stop' in c for c in test.operations()))
+
+    def test_public_admin_failure_keeps_current_without_writer_restart(self):
+        for failure in ('FAIL_PULL', 'FAIL_SCHEMA', 'FAIL_UP', 'FAIL_HEALTH', 'FAIL_OWNER', 'FAIL_IMAGE_LOOKUP', 'FAIL_LOCK'):
+            with self.subTest(failure=failure):
+                test = BackupRestoreTests()
+                test.setUp()
+                self.addCleanup(test.doCleanups)
+                test.prepare_public_admin()
+                test.env[failure] = '1'
+                self.assertNotEqual(test.run_script('deploy.sh').returncode, 0)
+                self.assertEqual((test.path / 'current').resolve(), test.previous)
+                self.assertFalse(any('run' in c or 'stop' in c for c in test.operations()))
+                self.assertFalse((test.path / 'backend-recovery-required').exists())
+
+    def test_public_admin_rejects_mixed_scope_and_image_selectors(self):
+        self.prepare_public_admin()
+        script = self.release_root / 'scripts/admin-only-release.py'
+        for flags in (('--public-admin', '--shop-image'), ('--public-admin', '--caddy-image'),
+                      ('--public-image',), ('--public-admin', '--admin-shop'),
+                      ('--public-admin', '--backend-admin'), ('--public-admin', '--shop-ingress'),
+                      ('--public-admin', '--public-image', '--shop-image')):
+            with self.subTest(flags=flags):
+                result = subprocess.run(['python3', '-B', str(script), str(self.previous),
+                                         str(self.release_root), *flags], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), '')
+        self.assertFalse(self.calls.exists())
+
+    def test_actual_schema_preflight_accepts_only_the_exact_reviewed_head(self):
+        self.prepare_deploy()
+        self.env['FAIL_PREFLIGHT'] = '1'
+        self.assertNotEqual(self.run_script('deploy.sh').returncode, 0)
+        code = next(call[-1] for call in self.operations()
+                    if any('Backend release preflight failed:' in arg for arg in call))
+        harness = '''import sys, types
+def module(name):
+    value = types.ModuleType(name)
+    value.__path__ = []
+    sys.modules[name] = value
+    if '.' in name:
+        parent, child = name.rsplit('.', 1)
+        setattr(sys.modules[parent], child, value)
+    return value
+for name in ('app', 'app.core', 'app.core.config', 'app.core.proxy_trust',
+             'app.core.migration_readiness', 'app.core.background_workers',
+             'app.core.shop_request_size', 'app.services', 'app.services.master_mono',
+             'app.services.mono_checkbox_poll', 'app.services.shop_online_payment',
+             'app.services.checkout_reminders', 'app.services.checkout_reminder_email',
+             'app.services.checkout_reminder_smtp', 'app.utils',
+             'app.utils.backfill_product_names_en', 'app.utils.backfill_category_names_en',
+             'app.utils.backfill_shop_content_en', 'app.dependencies',
+             'app.dependencies.shop_input', 'alembic', 'alembic.config', 'alembic.script'):
+    module(name)
+sys.modules['app.core.config'].Settings = lambda: None
+sys.modules['alembic.config'].Config = lambda path: object()
+sys.modules['alembic.script'].ScriptDirectory = types.SimpleNamespace(
+    from_config=lambda config: types.SimpleNamespace(get_heads=lambda: HEADS))
+'''
+        for heads in (['0145_booking_funnel_observations'], ['0144_master_rewards'], [],
+                      ['0145_booking_funnel_observations', 'other_branch'],
+                      ['0146_unreviewed'], ['0145_booking_funnel_observations'] * 2):
+            with self.subTest(heads=heads):
+                result = subprocess.run(['python3', '-B', '-c', 'HEADS=' + repr(heads) + '\n' + harness + '\n' + code],
+                                        capture_output=True, text=True)
+                expected = heads == ['0145_booking_funnel_observations']
+                self.assertEqual(result.returncode == 0, expected, result.stderr)
+                if not expected:
+                    self.assertIn('Backend release preflight failed:', result.stderr)
+                    self.assertNotIn('Traceback', result.stderr)
+        self.assertFalse(any('stop' in c or 'up' in c or ('run' in c and c[-1] == 'migrate')
+                             for c in self.operations()))
+        self.assertFalse((self.path / 'backend-recovery-required').exists())
 
     def prepare_admin_shop(self):
         self.prepare_admin_only()
@@ -776,7 +919,7 @@ class BackupRestoreTests(unittest.TestCase):
         self.assertIn('Settings()', code)
         self.assertIn('import app.services.master_mono', code)
         self.assertIn('import app.services.mono_checkbox_poll', code)
-        self.assertIn('["0144_master_rewards"]', code)
+        self.assertIn('["0145_booking_funnel_observations"]', code)
         self.assertIn('import app.dependencies.shop_input', code)
         self.assertIn('import app.core.shop_request_size', code)
         for module in ('checkout_reminders', 'checkout_reminder_email', 'checkout_reminder_smtp'):
