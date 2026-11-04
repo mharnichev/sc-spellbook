@@ -7,7 +7,7 @@ the independently reviewed frozen application revisions and explicit release han
 
 ## Infrastructure contract
 
-- Backend candidate must expose exactly0145_booking_funnel_observations as its
+- Backend candidate must expose exactly0146_merge_inventory_booking as its
   single Alembic head. Old0144, missing/multiple and unknown future heads fail
   the existing preflight before stopping writers or creating a recovery marker.
 - Production-copy rehearsal targets0145 and names its upgraded archive0145.

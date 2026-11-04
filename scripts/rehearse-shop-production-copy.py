@@ -16,7 +16,7 @@ import uuid
 
 
 # Expected candidate schema for rehearsal, not a release acceptance pin.
-HEAD = "0145_booking_funnel_observations"
+HEAD = "0146_merge_inventory_booking"
 BASE = "0110_nova_poshta_directory"
 SOURCE_HEADS = (BASE, "0129_shop_ingress_limits", "0134_shop_canonical_collation", "0136_category_names_en", "0137_shop_online_payment", "0138_shop_content_en", "0139_shop_input_guards", "0140_shop_order_receipt_snapshot", "0143_auto_checkout_checkpoint", "0144_master_rewards", HEAD)
 

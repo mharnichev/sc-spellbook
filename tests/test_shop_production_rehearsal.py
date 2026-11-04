@@ -21,13 +21,13 @@ SPEC.loader.exec_module(MODULE)
 
 class RehearsalTests(unittest.TestCase):
     def test_upcoming_target_retains_every_reviewed_source_baseline(self):
-        self.assertEqual(MODULE.HEAD, '0145_booking_funnel_observations')
+        self.assertEqual(MODULE.HEAD, '0146_merge_inventory_booking')
         self.assertEqual(set(MODULE.SOURCE_HEADS), {
             '0110_nova_poshta_directory', '0129_shop_ingress_limits',
             '0134_shop_canonical_collation', '0136_category_names_en',
             '0137_shop_online_payment', '0138_shop_content_en', '0139_shop_input_guards',
             '0140_shop_order_receipt_snapshot', '0143_auto_checkout_checkpoint',
-            '0144_master_rewards', '0145_booking_funnel_observations',
+            '0144_master_rewards', '0146_merge_inventory_booking',
         })
         for head in ('0143_auto_checkout_checkpoint', '0144_master_rewards', MODULE.HEAD):
             with self.subTest(head=head):
@@ -35,7 +35,7 @@ class RehearsalTests(unittest.TestCase):
                 self.assertIsNone(MODULE.verify_checkout_upgrade(
                     lambda *_: self.fail('Historical prices and reminders must not be revalidated as new backfill'), head))
         with self.assertRaisesRegex(RuntimeError, 'Unreviewed source baseline'):
-            MODULE.source_archive_name('0146_unreviewed')
+            MODULE.source_archive_name('0147_unreviewed')
 
     def test_current_production_baseline_does_not_reapply_historical_checkout_assertions(self):
         self.assertIn('0143_auto_checkout_checkpoint', MODULE.SOURCE_HEADS)
@@ -69,7 +69,7 @@ class RehearsalTests(unittest.TestCase):
         _, error, reported, _ = self.exercise(source_head='0140_shop_order_receipt_snapshot', observed=observed)
         self.assertIsNone(error)
         self.assertTrue(reported)
-        self.assertEqual(observed['metadata']['head'], '0145_booking_funnel_observations')
+        self.assertEqual(observed['metadata']['head'], '0146_merge_inventory_booking')
         self.assertEqual(set(observed['metadata']['archives']),
                          {'production-0140.dump', 'upgraded-0145.dump'})
         self.assertEqual(observed['english_calls'], [])
@@ -79,7 +79,7 @@ class RehearsalTests(unittest.TestCase):
         _, error, reported, _ = self.exercise(source_head='0139_shop_input_guards', observed=observed)
         self.assertIsNone(error)
         self.assertTrue(reported)
-        self.assertEqual(observed['metadata']['head'], '0145_booking_funnel_observations')
+        self.assertEqual(observed['metadata']['head'], '0146_merge_inventory_booking')
         self.assertEqual(set(observed['metadata']['archives']),
                          {'production-0139.dump', 'upgraded-0145.dump'})
         self.assertEqual(observed['english_calls'], [])
@@ -89,7 +89,7 @@ class RehearsalTests(unittest.TestCase):
         calls, error, reported, _ = self.exercise(source_head='0138_shop_content_en', observed=observed)
         self.assertIsNone(error)
         self.assertTrue(reported)
-        self.assertEqual(observed['metadata']['head'], '0145_booking_funnel_observations')
+        self.assertEqual(observed['metadata']['head'], '0146_merge_inventory_booking')
         self.assertEqual(set(observed['metadata']['archives']), {'production-0138.dump', 'upgraded-0145.dump'})
         self.assertEqual(observed['english_calls'], [])
         self.assertFalse(any('-m' in command for command in calls))
@@ -99,7 +99,7 @@ class RehearsalTests(unittest.TestCase):
         _, error, reported, _ = self.exercise(source_head='0137_shop_online_payment', observed=observed)
         self.assertIsNone(error)
         self.assertTrue(reported)
-        self.assertEqual(observed['metadata']['head'], '0145_booking_funnel_observations')
+        self.assertEqual(observed['metadata']['head'], '0146_merge_inventory_booking')
         self.assertIn('production-0137.dump', observed['metadata']['archives'])
 
     def test_current_english_baseline_is_a_supported_payment_source(self):
@@ -381,10 +381,10 @@ class RehearsalTests(unittest.TestCase):
         calls, error, reported, output = self.exercise(source_head='0144_master_rewards', observed=observed)
         self.assertIsNone(error)
         self.assertTrue(reported)
-        self.assertIn('"head": "0145_booking_funnel_observations"', output)
+        self.assertIn('"head": "0146_merge_inventory_booking"', output)
         metadata = observed['metadata']
         self.assertEqual(metadata['source_head'], '0144_master_rewards')
-        self.assertEqual(metadata['head'], '0145_booking_funnel_observations')
+        self.assertEqual(metadata['head'], '0146_merge_inventory_booking')
         self.assertEqual(set(metadata['archives']), {'production-0144.dump', 'upgraded-0145.dump'})
         self.assertIsNone(metadata['checkout_upgrade'])
         self.assertIsNone(metadata['english_backfill'])
@@ -414,7 +414,7 @@ class RehearsalTests(unittest.TestCase):
         self.assertEqual(len([call for call in calls if 'soulcuts-postgres-1' in call]), 2)
 
     def test_candidate_wrong_head_rejects_before_archive_restore_or_compatibility(self):
-        for head in ('0144_master_rewards', '0146_unreviewed'):
+        for head in ('0144_master_rewards', '0147_unreviewed'):
             with self.subTest(head=head):
                 calls, error, reported, output = self.exercise(source_head='0144_master_rewards', target_head=head)
                 self.assertIn('exact reviewed head', error)
@@ -489,7 +489,7 @@ class RehearsalTests(unittest.TestCase):
                     ('products', 'idempotent'), ('categories', 'idempotent')]
         self.assertEqual(observed['english_calls'], expected)
         metadata = observed['metadata']
-        self.assertEqual(metadata['head'], '0145_booking_funnel_observations')
+        self.assertEqual(metadata['head'], '0146_merge_inventory_booking')
         self.assertEqual(set(metadata['archives']), {'production-0134.dump', 'upgraded-0145.dump'})
         english = metadata['english_backfill']
         self.assertEqual(english['counts'], dict(products=552, categories=44))
