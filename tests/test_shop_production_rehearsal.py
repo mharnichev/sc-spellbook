@@ -68,15 +68,15 @@ class RehearsalTests(unittest.TestCase):
             os.umask(old_umask)
 
     def test_upcoming_target_retains_every_reviewed_source_baseline(self):
-        self.assertEqual(MODULE.HEAD, '0147_pos_checkout_intents')
+        self.assertEqual(MODULE.HEAD, '0148_master_mono_returned_url')
         self.assertEqual(set(MODULE.SOURCE_HEADS), {
             '0110_nova_poshta_directory', '0129_shop_ingress_limits',
             '0134_shop_canonical_collation', '0136_category_names_en',
             '0137_shop_online_payment', '0138_shop_content_en', '0139_shop_input_guards',
             '0140_shop_order_receipt_snapshot', '0143_auto_checkout_checkpoint',
-            '0144_master_rewards', '0146_merge_inventory_booking', '0147_pos_checkout_intents',
+            '0144_master_rewards', '0146_merge_inventory_booking', '0147_pos_checkout_intents', '0148_master_mono_returned_url',
         })
-        for head in ('0143_auto_checkout_checkpoint', '0144_master_rewards', '0146_merge_inventory_booking', MODULE.HEAD):
+        for head in ('0143_auto_checkout_checkpoint', '0144_master_rewards', '0146_merge_inventory_booking', '0147_pos_checkout_intents', MODULE.HEAD):
             with self.subTest(head=head):
                 self.assertEqual(MODULE.source_archive_name(head), 'production-' + head[:4] + '.dump')
                 self.assertIsNone(MODULE.verify_checkout_upgrade(
@@ -116,7 +116,7 @@ class RehearsalTests(unittest.TestCase):
         _, error, reported, _ = self.exercise(source_head='0140_shop_order_receipt_snapshot', observed=observed)
         self.assertIsNone(error)
         self.assertTrue(reported)
-        self.assertEqual(observed['metadata']['head'], '0147_pos_checkout_intents')
+        self.assertEqual(observed['metadata']['head'], '0148_master_mono_returned_url')
         self.assertEqual(set(observed['metadata']['archives']),
                          {'production-0140.dump', 'upgraded-0145.dump'})
         self.assertEqual(observed['english_calls'], [])
@@ -126,7 +126,7 @@ class RehearsalTests(unittest.TestCase):
         _, error, reported, _ = self.exercise(source_head='0139_shop_input_guards', observed=observed)
         self.assertIsNone(error)
         self.assertTrue(reported)
-        self.assertEqual(observed['metadata']['head'], '0147_pos_checkout_intents')
+        self.assertEqual(observed['metadata']['head'], '0148_master_mono_returned_url')
         self.assertEqual(set(observed['metadata']['archives']),
                          {'production-0139.dump', 'upgraded-0145.dump'})
         self.assertEqual(observed['english_calls'], [])
@@ -136,7 +136,7 @@ class RehearsalTests(unittest.TestCase):
         calls, error, reported, _ = self.exercise(source_head='0138_shop_content_en', observed=observed)
         self.assertIsNone(error)
         self.assertTrue(reported)
-        self.assertEqual(observed['metadata']['head'], '0147_pos_checkout_intents')
+        self.assertEqual(observed['metadata']['head'], '0148_master_mono_returned_url')
         self.assertEqual(set(observed['metadata']['archives']), {'production-0138.dump', 'upgraded-0145.dump'})
         self.assertEqual(observed['english_calls'], [])
         self.assertFalse(any('-m' in command for command in calls))
@@ -146,7 +146,7 @@ class RehearsalTests(unittest.TestCase):
         _, error, reported, _ = self.exercise(source_head='0137_shop_online_payment', observed=observed)
         self.assertIsNone(error)
         self.assertTrue(reported)
-        self.assertEqual(observed['metadata']['head'], '0147_pos_checkout_intents')
+        self.assertEqual(observed['metadata']['head'], '0148_master_mono_returned_url')
         self.assertIn('production-0137.dump', observed['metadata']['archives'])
 
     def test_current_english_baseline_is_a_supported_payment_source(self):
@@ -222,7 +222,7 @@ class RehearsalTests(unittest.TestCase):
             original_tables = ({'products': ['id', 'name', 'stock_quantity'],
                                 'categories': ['id', 'name', 'parent_id']} if english else {'customers': ['id']})
             historical_rows = {}
-            if expected_head in ('0144_master_rewards', MODULE.HEAD):
+            if expected_head in ('0144_master_rewards', '0147_pos_checkout_intents', MODULE.HEAD):
                 # Synthetic pre-existing rows: an intentional price override, an enrolled
                 # reminder and an append-only historical ledger must all survive unchanged.
                 original_tables.update(products=['id', 'price', 'recommended_retail_price', 'shop_price'],
@@ -423,15 +423,27 @@ class RehearsalTests(unittest.TestCase):
                                          for path in (root / 'backups').glob('*/english-reports/*.json')})
             return calls, error, bool(report), output.getvalue()
 
+    def test_0147_source_upgrades_without_changing_existing_ledger_or_reminders(self):
+        observed = {}
+        _, error, reported, _ = self.exercise(source_head='0147_pos_checkout_intents', observed=observed)
+        self.assertIsNone(error)
+        self.assertTrue(reported)
+        self.assertEqual(observed['metadata']['source_head'], '0147_pos_checkout_intents')
+        self.assertEqual(observed['metadata']['head'], '0148_master_mono_returned_url')
+        self.assertIsNone(observed['metadata']['checkout_upgrade'])
+        self.assertTrue(observed['metadata']['existing_rows_unchanged'])
+        self.assertTrue(observed['metadata']['existing_sequences_unchanged'])
+        self.assertIn('master_reward_ledger', observed['historical_rows'])
+
     def test_0144_source_to_0145_preserves_historical_ledger_prices_and_reminders(self):
         observed = {}
         calls, error, reported, output = self.exercise(source_head='0144_master_rewards', observed=observed)
         self.assertIsNone(error)
         self.assertTrue(reported)
-        self.assertIn('"head": "0147_pos_checkout_intents"', output)
+        self.assertIn('"head": "0148_master_mono_returned_url"', output)
         metadata = observed['metadata']
         self.assertEqual(metadata['source_head'], '0144_master_rewards')
-        self.assertEqual(metadata['head'], '0147_pos_checkout_intents')
+        self.assertEqual(metadata['head'], '0148_master_mono_returned_url')
         self.assertEqual(set(metadata['archives']), {'production-0144.dump', 'upgraded-0145.dump'})
         self.assertIsNone(metadata['checkout_upgrade'])
         self.assertIsNone(metadata['english_backfill'])
@@ -536,7 +548,7 @@ class RehearsalTests(unittest.TestCase):
                     ('products', 'idempotent'), ('categories', 'idempotent')]
         self.assertEqual(observed['english_calls'], expected)
         metadata = observed['metadata']
-        self.assertEqual(metadata['head'], '0147_pos_checkout_intents')
+        self.assertEqual(metadata['head'], '0148_master_mono_returned_url')
         self.assertEqual(set(metadata['archives']), {'production-0134.dump', 'upgraded-0145.dump'})
         english = metadata['english_backfill']
         self.assertEqual(english['counts'], dict(products=552, categories=44))

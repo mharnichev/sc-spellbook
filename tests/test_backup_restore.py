@@ -428,13 +428,13 @@ sys.modules['alembic.config'].Config = lambda path: object()
 sys.modules['alembic.script'].ScriptDirectory = types.SimpleNamespace(
     from_config=lambda config: types.SimpleNamespace(get_heads=lambda: HEADS))
 '''
-        for heads in (['0147_pos_checkout_intents'], ['0144_master_rewards'], [],
-                      ['0147_pos_checkout_intents', 'other_branch'],
-                      ['0148_unreviewed'], ['0147_pos_checkout_intents'] * 2):
+        for heads in (['0148_master_mono_returned_url'], ['0147_pos_checkout_intents'], ['0144_master_rewards'], [],
+                      ['0148_master_mono_returned_url', 'other_branch'],
+                      ['0148_unreviewed'], ['0148_master_mono_returned_url'] * 2):
             with self.subTest(heads=heads):
                 result = subprocess.run(['python3', '-B', '-c', 'HEADS=' + repr(heads) + '\n' + harness + '\n' + code],
                                         capture_output=True, text=True)
-                expected = heads == ['0147_pos_checkout_intents']
+                expected = heads == ['0148_master_mono_returned_url']
                 self.assertEqual(result.returncode == 0, expected, result.stderr)
                 if not expected:
                     self.assertIn('Backend release preflight failed:', result.stderr)
@@ -919,7 +919,7 @@ sys.modules['alembic.script'].ScriptDirectory = types.SimpleNamespace(
         self.assertIn('Settings()', code)
         self.assertIn('import app.services.master_mono', code)
         self.assertIn('import app.services.mono_checkbox_poll', code)
-        self.assertIn('["0147_pos_checkout_intents"]', code)
+        self.assertIn('["0148_master_mono_returned_url"]', code)
         self.assertIn('import app.dependencies.shop_input', code)
         self.assertIn('import app.core.shop_request_size', code)
         for module in ('checkout_reminders', 'checkout_reminder_email', 'checkout_reminder_smtp'):
