@@ -16,9 +16,9 @@ import uuid
 
 
 # Expected candidate schema for rehearsal, not a release acceptance pin.
-HEAD = "0146_merge_inventory_booking"
+HEAD = "0147_pos_checkout_intents"
 BASE = "0110_nova_poshta_directory"
-SOURCE_HEADS = (BASE, "0129_shop_ingress_limits", "0134_shop_canonical_collation", "0136_category_names_en", "0137_shop_online_payment", "0138_shop_content_en", "0139_shop_input_guards", "0140_shop_order_receipt_snapshot", "0143_auto_checkout_checkpoint", "0144_master_rewards", HEAD)
+SOURCE_HEADS = (BASE, "0129_shop_ingress_limits", "0134_shop_canonical_collation", "0136_category_names_en", "0137_shop_online_payment", "0138_shop_content_en", "0139_shop_input_guards", "0140_shop_order_receipt_snapshot", "0143_auto_checkout_checkpoint", "0144_master_rewards", "0146_merge_inventory_booking", HEAD)
 
 
 def source_archive_name(head):
@@ -40,7 +40,7 @@ def verify_source_copy(sql, expected):
 
 def verify_checkout_upgrade(sql, source_head):
     # A repeated rehearsal at HEAD may already contain legitimate reminder rows.
-    if source_head in ("0143_auto_checkout_checkpoint", "0144_master_rewards", HEAD):
+    if source_head in ("0143_auto_checkout_checkpoint", "0144_master_rewards", "0146_merge_inventory_booking", HEAD):
         return None
     mismatch = sql('upgrade_copy', 'SELECT count(*) FROM products WHERE shop_price IS DISTINCT FROM COALESCE(recommended_retail_price, price)')
     if mismatch != '0':
@@ -344,7 +344,7 @@ def main():
     if args.english_input_dir and any(not re.fullmatch(r'[0-9a-f]{64}', value) for value in english_arguments[1:]):
         parser.error('English input checksums must be exact SHA-256 values')
     for image in (args.candidate, args.previous):
-        if not re.fullmatch(r"ghcr\.io/mharnichev/sc-be/api@sha256:[0-9a-f]{64}", image):
+        if not re.fullmatch(r"ghcr\.io/mharnichev/sc-be/(?:api|api-rewards-20261030-pr20)@sha256:[0-9a-f]{64}", image):
             parser.error("Images must use immutable digests in the approved backend registry")
     if not re.fullmatch(r"postgres@sha256:[0-9a-f]{64}", args.postgres_image):
         parser.error("PostgreSQL must use its reviewed production image digest")
