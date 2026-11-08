@@ -119,7 +119,7 @@ compose --profile release run --rm --no-deps --entrypoint python migrate -c \
     import app.services.checkout_reminder_smtp
     from alembic.config import Config
     from alembic.script import ScriptDirectory
-    if ScriptDirectory.from_config(Config("alembic.ini")).get_heads() != ["0146_merge_inventory_booking"]:
+    if ScriptDirectory.from_config(Config("alembic.ini")).get_heads() != ["0147_pos_checkout_intents"]:
         raise RuntimeError("Unexpected migration head")
 except Exception:
     raise SystemExit("Backend release preflight failed: settings, modules or schema contract unavailable") from None'

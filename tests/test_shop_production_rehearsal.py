@@ -20,22 +20,69 @@ SPEC.loader.exec_module(MODULE)
 
 
 class RehearsalTests(unittest.TestCase):
+    def test_approved_backend_registry_references_reach_private_copy_setup(self):
+        repos = ('api', 'api-rewards-20261030-pr20')
+        for candidate in repos:
+            for previous in repos:
+                with self.subTest(candidate=candidate, previous=previous):
+                    self.check_registry_arguments(candidate, previous, accepted=True)
+
+    def test_unapproved_backend_references_are_rejected_before_copy_or_docker(self):
+        invalid = (
+            'ghcr.io/mharnichev/sc-be/api-other@sha256:' + 'a' * 64,
+            'ghcr.io/other/sc-be/api@sha256:' + 'a' * 64,
+            'ghcr.io/mharnichev/other/api@sha256:' + 'a' * 64,
+            'ghcr.io/mharnichev/sc-be/api:latest',
+            'ghcr.io/mharnichev/sc-be/api@sha256:' + 'a' * 63,
+            'ghcr.io/mharnichev/sc-be/api@sha256:' + 'A' * 64,
+        )
+        approved = 'ghcr.io/mharnichev/sc-be/api@sha256:' + 'a' * 64
+        for value in invalid:
+            for candidate, previous in ((value, approved), (approved, value)):
+                with self.subTest(candidate=candidate, previous=previous):
+                    self.check_registry_arguments(candidate, previous, accepted=False, complete=True)
+
+    def check_registry_arguments(self, candidate, previous, *, accepted, complete=False):
+        if not complete:
+            candidate = 'ghcr.io/mharnichev/sc-be/' + candidate + '@sha256:' + 'a' * 64
+            previous = 'ghcr.io/mharnichev/sc-be/' + previous + '@sha256:' + 'b' * 64
+        argv = [str(SCRIPT), '--candidate', candidate, '--previous', previous,
+                '--postgres-image', 'postgres@sha256:' + 'c' * 64, '--confirm-production-copy']
+        old_umask = os.umask(0o077)
+        try:
+            with patch.object(sys, 'argv', argv), \
+                 patch.object(MODULE.Path, 'mkdir', side_effect=RuntimeError('private-copy-setup')) as mkdir, \
+                 patch.object(MODULE.subprocess, 'run') as docker, \
+                 contextlib.redirect_stderr(io.StringIO()):
+                if accepted:
+                    with self.assertRaisesRegex(RuntimeError, '^private-copy-setup$'):
+                        MODULE.main()
+                    mkdir.assert_called_once()
+                else:
+                    with self.assertRaises(SystemExit) as error:
+                        MODULE.main()
+                    self.assertEqual(error.exception.code, 2)
+                    mkdir.assert_not_called()
+                docker.assert_not_called()
+        finally:
+            os.umask(old_umask)
+
     def test_upcoming_target_retains_every_reviewed_source_baseline(self):
-        self.assertEqual(MODULE.HEAD, '0146_merge_inventory_booking')
+        self.assertEqual(MODULE.HEAD, '0147_pos_checkout_intents')
         self.assertEqual(set(MODULE.SOURCE_HEADS), {
             '0110_nova_poshta_directory', '0129_shop_ingress_limits',
             '0134_shop_canonical_collation', '0136_category_names_en',
             '0137_shop_online_payment', '0138_shop_content_en', '0139_shop_input_guards',
             '0140_shop_order_receipt_snapshot', '0143_auto_checkout_checkpoint',
-            '0144_master_rewards', '0146_merge_inventory_booking',
+            '0144_master_rewards', '0146_merge_inventory_booking', '0147_pos_checkout_intents',
         })
-        for head in ('0143_auto_checkout_checkpoint', '0144_master_rewards', MODULE.HEAD):
+        for head in ('0143_auto_checkout_checkpoint', '0144_master_rewards', '0146_merge_inventory_booking', MODULE.HEAD):
             with self.subTest(head=head):
                 self.assertEqual(MODULE.source_archive_name(head), 'production-' + head[:4] + '.dump')
                 self.assertIsNone(MODULE.verify_checkout_upgrade(
                     lambda *_: self.fail('Historical prices and reminders must not be revalidated as new backfill'), head))
         with self.assertRaisesRegex(RuntimeError, 'Unreviewed source baseline'):
-            MODULE.source_archive_name('0147_unreviewed')
+            MODULE.source_archive_name('0148_unreviewed')
 
     def test_current_production_baseline_does_not_reapply_historical_checkout_assertions(self):
         self.assertIn('0143_auto_checkout_checkpoint', MODULE.SOURCE_HEADS)
@@ -69,7 +116,7 @@ class RehearsalTests(unittest.TestCase):
         _, error, reported, _ = self.exercise(source_head='0140_shop_order_receipt_snapshot', observed=observed)
         self.assertIsNone(error)
         self.assertTrue(reported)
-        self.assertEqual(observed['metadata']['head'], '0146_merge_inventory_booking')
+        self.assertEqual(observed['metadata']['head'], '0147_pos_checkout_intents')
         self.assertEqual(set(observed['metadata']['archives']),
                          {'production-0140.dump', 'upgraded-0145.dump'})
         self.assertEqual(observed['english_calls'], [])
@@ -79,7 +126,7 @@ class RehearsalTests(unittest.TestCase):
         _, error, reported, _ = self.exercise(source_head='0139_shop_input_guards', observed=observed)
         self.assertIsNone(error)
         self.assertTrue(reported)
-        self.assertEqual(observed['metadata']['head'], '0146_merge_inventory_booking')
+        self.assertEqual(observed['metadata']['head'], '0147_pos_checkout_intents')
         self.assertEqual(set(observed['metadata']['archives']),
                          {'production-0139.dump', 'upgraded-0145.dump'})
         self.assertEqual(observed['english_calls'], [])
@@ -89,7 +136,7 @@ class RehearsalTests(unittest.TestCase):
         calls, error, reported, _ = self.exercise(source_head='0138_shop_content_en', observed=observed)
         self.assertIsNone(error)
         self.assertTrue(reported)
-        self.assertEqual(observed['metadata']['head'], '0146_merge_inventory_booking')
+        self.assertEqual(observed['metadata']['head'], '0147_pos_checkout_intents')
         self.assertEqual(set(observed['metadata']['archives']), {'production-0138.dump', 'upgraded-0145.dump'})
         self.assertEqual(observed['english_calls'], [])
         self.assertFalse(any('-m' in command for command in calls))
@@ -99,7 +146,7 @@ class RehearsalTests(unittest.TestCase):
         _, error, reported, _ = self.exercise(source_head='0137_shop_online_payment', observed=observed)
         self.assertIsNone(error)
         self.assertTrue(reported)
-        self.assertEqual(observed['metadata']['head'], '0146_merge_inventory_booking')
+        self.assertEqual(observed['metadata']['head'], '0147_pos_checkout_intents')
         self.assertIn('production-0137.dump', observed['metadata']['archives'])
 
     def test_current_english_baseline_is_a_supported_payment_source(self):
@@ -381,10 +428,10 @@ class RehearsalTests(unittest.TestCase):
         calls, error, reported, output = self.exercise(source_head='0144_master_rewards', observed=observed)
         self.assertIsNone(error)
         self.assertTrue(reported)
-        self.assertIn('"head": "0146_merge_inventory_booking"', output)
+        self.assertIn('"head": "0147_pos_checkout_intents"', output)
         metadata = observed['metadata']
         self.assertEqual(metadata['source_head'], '0144_master_rewards')
-        self.assertEqual(metadata['head'], '0146_merge_inventory_booking')
+        self.assertEqual(metadata['head'], '0147_pos_checkout_intents')
         self.assertEqual(set(metadata['archives']), {'production-0144.dump', 'upgraded-0145.dump'})
         self.assertIsNone(metadata['checkout_upgrade'])
         self.assertIsNone(metadata['english_backfill'])
@@ -414,7 +461,7 @@ class RehearsalTests(unittest.TestCase):
         self.assertEqual(len([call for call in calls if 'soulcuts-postgres-1' in call]), 2)
 
     def test_candidate_wrong_head_rejects_before_archive_restore_or_compatibility(self):
-        for head in ('0144_master_rewards', '0147_unreviewed'):
+        for head in ('0144_master_rewards', '0148_unreviewed'):
             with self.subTest(head=head):
                 calls, error, reported, output = self.exercise(source_head='0144_master_rewards', target_head=head)
                 self.assertIn('exact reviewed head', error)
@@ -489,7 +536,7 @@ class RehearsalTests(unittest.TestCase):
                     ('products', 'idempotent'), ('categories', 'idempotent')]
         self.assertEqual(observed['english_calls'], expected)
         metadata = observed['metadata']
-        self.assertEqual(metadata['head'], '0146_merge_inventory_booking')
+        self.assertEqual(metadata['head'], '0147_pos_checkout_intents')
         self.assertEqual(set(metadata['archives']), {'production-0134.dump', 'upgraded-0145.dump'})
         english = metadata['english_backfill']
         self.assertEqual(english['counts'], dict(products=552, categories=44))
