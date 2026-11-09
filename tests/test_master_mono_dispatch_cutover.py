@@ -171,8 +171,20 @@ class CutoverTests(unittest.TestCase):
                     self.running = False
                 return b''
 
-        job = Runtime(release, app)
+        # The CI Compose example is not this isolated fixture's private environment.
+        with patch.dict(os.environ, BACKEND_ENV_FILE=str((app / 'env/backend.env').resolve()),
+                        COMPOSE_FILE='', COMPOSE_PROFILES=''):
+            job = Runtime(release, app)
         return job
+
+    def test_inherited_configuration_overrides_remain_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job = self.runtime(directory)
+            expected = {'BACKEND_ENV_FILE': str(job.env), 'COMPOSE_FILE': '', 'COMPOSE_PROFILES': ''}
+            for key in expected:
+                with self.subTest(key=key), patch.dict(os.environ, {**expected, key: 'unexpected'}):
+                    with self.assertRaises(RuntimeError):
+                        MODULE.Cutover(job.release, job.app)
 
     def paused_runtime(self, directory):
         job = self.runtime(directory)
