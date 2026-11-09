@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Private, fail-closed 0150 -> 0151 dispatch fence. Never calls a provider."""
+"""Private, fail-closed 0150/0151 -> 0151 dispatch fence. Never calls a provider."""
 import argparse
 import datetime
 import hashlib
@@ -108,7 +108,8 @@ def verify_drain(before, after):
     expected = [(1, 3), (2, 4)]
     require([(row['id'], row['order_id']) for row in before['unresolved']] == expected,
             'Historical unresolved requests are not exactly request1/order3 and request2/order4')
-    require(after['head'] == SOURCE and after['sessions'] == 0, 'Old schema or writer session drain failed')
+    require(before['head'] in (SOURCE, HEAD) and after['head'] == before['head']
+            and after['sessions'] == 0, 'Captured schema or writer session drain failed')
     for snapshot in (before, after):
         require(snapshot['closures'] == 2 and snapshot['closure_orders'] == [5, 6]
                 and snapshot['conflicts'] == 0, 'Protected closure5/6 or quarantine baseline differs')
@@ -250,7 +251,6 @@ class Cutover:
         flags = {name: self.flags(info) for name, info in writers.items()}
         require(all(info['State']['Running'] for info in writers.values()), 'Old writers must be running at capture')
         baseline = self.snapshot()
-        require(baseline['head'] == SOURCE, 'Exact source0150 required')
         verify_drain(baseline, {**baseline, 'sessions': 0})
         state = dict(release=str(self.release), previous=str((self.app / 'current').resolve(strict=True)),
                      pins_hash=digest((self.release / 'versions/production.env').read_bytes()),
@@ -388,8 +388,10 @@ class Cutover:
         require(os.environ.get('PILOT_MANUAL_GATE') == 'verified' and os.environ.get('EXPECTED_RELEASE') == str(self.release),
                 'Exact release inspected recovery gate required')
         head = self.snapshot()['head']
-        require(head in (SOURCE, HEAD), 'Unknown schema; no recovery action performed')
-        if head == SOURCE:
+        baseline_head = state['baseline']['head']
+        require(baseline_head in (SOURCE, HEAD) and head in (SOURCE, HEAD)
+                and (baseline_head != HEAD or head == HEAD), 'Unknown or regressed schema; no recovery action performed')
+        if head == SOURCE or (baseline_head == HEAD and state['phase'] in ('prepared', 'pause_intent')):
             require(state['phase'] in ('prepared', 'pause_intent', 'paused'), 'Unexpected source-schema recovery phase')
             self.run(self.compose + ['stop', '--timeout', '90', *WRITERS])
             self.pause(reconcile=True)
@@ -399,9 +401,11 @@ class Cutover:
                 'Unexpected target-schema recovery phase')
         self.fence_failed_pair(state)
         stopped = self.snapshot()
-        require(stopped['sessions'] == 0, 'Writer sessions remain during recovery')
+        require(stopped['head'] == HEAD and stopped['sessions'] == 0, 'Target schema or writer session drain failed during recovery')
         for key in ('requests', 'unresolved', 'protected', 'compatibility', 'closures', 'closure_orders', 'conflicts'):
             require(stopped[key] == state['baseline'][key], 'Changed dispatch history requires investigation: ' + key)
+        require(self.marker_matches().get('phase') == 'pending_acceptance', 'Pending acceptance required')
+        self.verify_backup()
         try:
             self.start_writers()
             state['paused_ids'] = self.verify_live(state, True, {name: state['writers'][name]['id'] for name in WRITERS})
