@@ -20,6 +20,7 @@ if not SCRIPT.is_file():
 SPEC = importlib.util.spec_from_file_location('recovery', SCRIPT)
 C = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(C)
+SEALED_EVIDENCE = b'{"exception":{"blocking_reasons":["monobank_unavailable"],"expected_revision":444,"native_full_row_md5":"a637fede0c98232445d9da8074de6e76","order_id":7,"revision":445,"scope_key_sha256":"b2a913d02fb79302bc83538a7e9ee831ecc958b5e3be9332691c4755d5e34b21","status":"monobank_unavailable"},"financial_identity":{"amount_minor":62900,"binding_authority":"provider","binding_transport":"https","currency":"UAH"},"http_read_evidence":{"active_master_binding_orders":[7],"raw_provider_ids_urls_omitted":true,"status_events":[{"at":"2026-11-09T20:12:01.880419397Z","http_status":200,"kind":"invoice_status","method":"GET","query_keys":[],"query_present":false},{"at":"2026-11-09T20:12:32.467456789Z","http_status":502,"kind":"invoice_status","method":"GET","query_keys":[],"query_present":false},{"at":"2026-11-09T20:13:02.924695574Z","http_status":200,"kind":"invoice_status","method":"GET","query_keys":[],"query_present":false}]},"http_read_evidence_sha256":"1bb2eacd3407e7c27f832c04b15cf674f9bb5f5b73974f51f2c8ce3b9d9a2b3b","kind":"preserved-historical-unusable-read-observation-not-payment-proof","observations":[{"at":"2026-11-09 20:12:02.065014+00:00","id":441,"proof_hash":"1e948340cdbd7982d6cdca4a4b2bf6cb53f894194c0ad521ff4f28c2e9dd4cd0","row_hash":"503d1ab80fed529910755dc462a5f085","status":"mono_checkbox_receipt_pending"},{"at":"2026-11-09 20:12:32.542869+00:00","id":442,"proof_hash":"2635dab491f1c7dde11e1dd86d388342bad7d20803cdee8ebf88656626f42ed8","row_hash":"c3bf23fb4752865b4d7ef09a0d41848d","status":"monobank_unavailable"},{"at":"2026-11-09 20:13:03.140421+00:00","id":443,"proof_hash":"0fcf727e864839579d30eb75874588d56bd9ae6513f4a8141de6de5697ba1b89","row_hash":"2a04a487e826a8bc0450b7a52fd485d2","status":"mono_checkbox_receipt_pending"}],"original_journal_sha256":"23e47db3c49bb12f1985886a82fff04ba941d17b4776160d63dde5031b99ff65","prior_evidence_sha256":"50dabe7743f49936db7fa310b14f86a7730e62ebea20016513c2deaf63da92e5","release":"20261109T191645Z-4044a8c","specific_failure_cause":"HTTP502 invoice-status GET in sole eligible master invoice7 polling window; URL identity omitted in logs; unavailable observation is never payment proof","version":2}\n'
 FIXTURE = Path(__file__).with_name('test_master_mono_dispatch_cutover.py')
 if not FIXTURE.is_file():
     FIXTURE = Path('/Users/markgarnicev/sc-local-work/ready-ui-release-20261109/publish-sc-spellbook/tests/test_master_mono_dispatch_cutover.py')
@@ -27,7 +28,7 @@ if not FIXTURE.is_file():
 
 def pending(revision):
     return dict(enabled=True, order_id=7, revision=revision, mode='mono_checkbox', paid=True,
-        receipt_accepted=False, status='mono_checkbox_receipt_pending', amount_minor=480000,
+        receipt_accepted=False, status='mono_checkbox_receipt_pending', amount_minor=62900,
         invoice_id='opaque-synthetic-invoice', payment_url=None, payment_url_source='mono_authenticated_create_v1',
         payment_url_expires_at=None, receipt_pdf_path=None, can_handover=False,
         can_verify_invoice=False, blocking_reasons=['pending'])
@@ -43,11 +44,31 @@ def row(index, response_json=None, order_id=1):
 
 def rows():
     before = [row(index) for index in range(351)] + [row(351, pending(337), 7)]
-    return before, copy.deepcopy(before) + [row(352, pending(338), 7), row(353, pending(339), 7)]
+    added = [row(352 + revision - 338, pending(revision), 7) for revision in range(338, 447)]
+    exceptional = next(item for item in added if item['response_json']['revision'] == 445)
+    exceptional['response_json'].update(status='monobank_unavailable', blocking_reasons=['monobank_unavailable'])
+    exceptional['row_hash'] = C.EXCEPTION_ROW_MD5
+    return before, copy.deepcopy(before) + added
+
+
+def fixture_exception_key():
+    _, current = rows()
+    item = next(item for item in current if isinstance(item['response_json'], dict)
+                and item['response_json'].get('revision') == 445)
+    return C.sha(item['scope_key'].encode())
+
+
+def observation_report(age=20, latest_id=600):
+    return {'ok': True, 'order_id': 7, 'historical_valid': True, 'canonical_payment_valid': True,
+            'binding_valid': True, 'latest': {'id': latest_id, 'row_hash': 'a' * 32,
+                'proof_hash': 'b' * 64, 'created_at': 1000.0},
+            'snapshot_clock': 1000.0 + age, 'freshness_age_seconds': float(age)}
 
 
 class ProofTests(unittest.TestCase):
     def setUp(self):
+        self.exception_pin = patch.object(C, 'EXCEPTION_KEY_SHA', fixture_exception_key())
+        self.exception_pin.start(); self.addCleanup(self.exception_pin.stop)
         self.before, self.after = rows()
         self.baseline_hash = C.aggregate(self.before)
 
@@ -57,9 +78,46 @@ class ProofTests(unittest.TestCase):
     def test_exact_finite_append_proof_preserves_inputs(self):
         original = copy.deepcopy(self.before)
         proof = self.prove()
-        self.assertEqual((proof['added_count'], proof['first_revision'], proof['last_revision']), (2, 338, 339))
+        self.assertEqual((proof['added_count'], proof['first_revision'], proof['last_revision']), (109, 338, 446))
         C.verify_frozen(proof, self.after)
         self.assertEqual(self.before, original)
+
+    def test_exact_historical_exception_is_required_unchanged_once(self):
+        def exceptional():
+            return next(item for item in self.after if isinstance(item['response_json'], dict)
+                        and item['response_json'].get('revision') == 445)
+        for change in ('missing', 'normal_replacement', 'second_unavailable', 'wrong_scope', 'digest_as_scope',
+                       'row_hash', 'revision', 'order', 'payload', 'amount', 'paid', 'receipt', 'handover', 'reasons'):
+            with self.subTest(change=change):
+                self.setUp(); item = exceptional()
+                if change == 'missing': self.after.remove(item)
+                elif change == 'normal_replacement':
+                    item['response_json'] = pending(445); item['scope_key'] = 'd' * 64
+                elif change == 'second_unavailable':
+                    self.after[-1]['response_json'].update(status='monobank_unavailable', blocking_reasons=['monobank_unavailable'])
+                elif change == 'wrong_scope': item['scope_key'] = 'd' * 64
+                elif change == 'digest_as_scope': item['scope_key'] = C.EXCEPTION_KEY_SHA
+                elif change == 'row_hash': item['row_hash'] = 'd' * 32
+                elif change == 'revision': item['response_json']['revision'] = 444
+                elif change == 'order': item['order_id'] = 8
+                elif change == 'payload': item['payload_hash'] = 'd' * 64
+                else:
+                    field = {'amount': 'amount_minor', 'paid': 'paid', 'receipt': 'receipt_accepted',
+                             'handover': 'can_handover', 'reasons': 'blocking_reasons'}[change]
+                    item['response_json'][field] = {'amount': 1, 'paid': False, 'receipt': True,
+                                                   'handover': True, 'reasons': []}[change]
+                with self.assertRaises(RuntimeError): self.prove()
+
+    def test_exception_is_preserved_as_historical_never_positive_proof(self):
+        proof = self.prove()
+        self.assertFalse(proof['historical_unusable_read']['positive_payment_proof'])
+        self.assertEqual(proof['historical_unusable_read']['revision'], 445)
+        self.assertEqual(proof['historical_unusable_read']['native_full_row_md5'], C.EXCEPTION_ROW_MD5)
+        C.verify_frozen(proof, self.after)
+        exceptional = next(item for item in self.after if isinstance(item['response_json'], dict)
+                           and item['response_json'].get('revision') == 445)
+        exceptional['row_hash'] = 'd' * 32
+        with self.assertRaises(RuntimeError): C.verify_frozen(proof, self.after)
 
     def test_old_row_mutation_or_deletion_refused(self):
         for change in ('delete', 'mutate', 'replace'):
@@ -85,7 +143,7 @@ class ProofTests(unittest.TestCase):
         with self.assertRaises(RuntimeError): self.prove()
 
     def test_exact_json_keys_and_types_required(self):
-        for key, value in [('revision', True), ('paid', 1), ('amount_minor', 480000.0),
+        for key, value in [('revision', True), ('paid', 1), ('amount_minor', 62900.0),
                            ('blocking_reasons', 'pending'), ('receipt_accepted', 0), ('order_id', True)]:
             with self.subTest(key=key):
                 self.setUp(); self.after[-1]['response_json'][key] = value
@@ -113,7 +171,7 @@ class ProofTests(unittest.TestCase):
         for change in ('addition', 'old_mutation', 'new_mutation', 'deletion'):
             with self.subTest(change=change):
                 _, after = rows()
-                if change == 'addition': after.append(row(354, pending(340), 7))
+                if change == 'addition': after.append(row(999, pending(447), 7))
                 if change == 'old_mutation': after[0]['row_hash'] = 'c' * 32
                 if change == 'new_mutation': after[-1]['row_hash'] = 'c' * 32
                 if change == 'deletion': after.pop()
@@ -122,7 +180,7 @@ class ProofTests(unittest.TestCase):
     def test_exact_release_and_every_hash_binding_required(self):
         binding = {'version': C.VERSION, 'release': str(C.RELEASE), 'helper_sha256': C.HELPER_SHA,
             'pins_sha256': C.PINS_SHA, 'manifest_sha256': C.MANIFEST_SHA,
-            'original_journal_sha256': C.ORIGINAL_JOURNAL_SHA}
+            'original_journal_sha256': C.ORIGINAL_JOURNAL_SHA, 'historical_evidence_sha256': C.EVIDENCE_SHA}
         actual = {key: value for key, value in binding.items() if key.endswith('_sha256')}
         C.verify_binding(binding, actual)
         for key in binding:
@@ -141,6 +199,8 @@ class StateTests(unittest.TestCase):
         cls.module = cls.fixture['MODULE']
 
     def setUp(self):
+        self.exception_pin = patch.object(C, 'EXCEPTION_KEY_SHA', fixture_exception_key())
+        self.exception_pin.start(); self.addCleanup(self.exception_pin.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         runtime = self.fixture['CutoverTests']().paused_runtime(self.tmp.name, same_head=True)
@@ -165,6 +225,9 @@ class StateTests(unittest.TestCase):
         job.intents = lambda container=None: copy.deepcopy(job.live_intents)
         job.actual_financial = {'ledger': 'same', 'stock': 'same', 'sales': 'same'}
         job.financial = lambda container=None: copy.deepcopy(job.actual_financial)
+        job.live_observation = observation_report()
+        job.observations = lambda: copy.deepcopy(job.live_observation)
+        proof['observation_freeze'] = C.validate_observations(job.live_observation)
         job.frozen_proof = copy.deepcopy(proof)
         job.paired_financial = copy.deepcopy(job.actual_financial)
         job.binding = {'synthetic': True}
@@ -226,14 +289,14 @@ class StateTests(unittest.TestCase):
                 self.job.live_snapshot = snapshot; self.job.actual_financial = finance
 
     def test_polling_addition_after_proof_blocks_enable(self):
-        self.job.live_intents.append(row(354, pending(340), 7))
+        self.job.live_intents.append(row(999, pending(447), 7))
         with self.assertRaises(RuntimeError): self.job.resume_accept()
         self.assertIn(b'=false', self.job.env.read_bytes())
 
     def test_post_start_polling_toctou_refences_and_keeps_marker(self):
         start = self.job.start_writers
         def changed_start():
-            start(); self.job.live_intents.append(row(354, pending(340), 7))
+            start(); self.job.live_intents.append(row(999, pending(447), 7))
         self.job.start_writers = changed_start
         with self.assertRaises(RuntimeError): self.job.resume_accept()
         self.assert_fenced()
@@ -247,6 +310,24 @@ class StateTests(unittest.TestCase):
 
     def test_failed_start_and_failed_acceptance_both_refence(self):
         self.job.failure = 'up'
+        with self.assertRaises(RuntimeError): self.job.resume_accept()
+        self.assert_fenced()
+
+    def test_historical_or_canonical_or_latest_proof_drift_blocks_enable(self):
+        for change in ('historical_valid', 'canonical_payment_valid', 'binding_valid', 'latest'):
+            with self.subTest(change=change):
+                original = copy.deepcopy(self.job.live_observation)
+                if change == 'latest': self.job.live_observation['latest']['row_hash'] = 'd' * 32
+                else: self.job.live_observation[change] = False
+                with self.assertRaises(RuntimeError): self.job.resume_accept()
+                self.assertIn(b'=false', self.job.env.read_bytes())
+                self.job.live_observation = original
+
+    def test_latest_proof_changed_after_enable_refences_without_reanchor(self):
+        start = self.job.start_writers
+        def changed_start():
+            start(); self.job.live_observation['latest']['id'] += 1
+        self.job.start_writers = changed_start
         with self.assertRaises(RuntimeError): self.job.resume_accept()
         self.assert_fenced()
 
@@ -300,7 +381,7 @@ class StateTests(unittest.TestCase):
         with patch.object(C.subprocess, 'run', side_effect=archive_run), \
              patch.object(C, 'prove_append_only', side_effect=lambda baseline, current: real_proof(baseline, current, C.aggregate(before))):
             proof, financial = self.job.restore_proof()
-        self.assertEqual(proof['added_count'], 2)
+        self.assertEqual(proof['added_count'], 109)
         self.assertTrue(any('psql' in command for command in seen))
         self.assertEqual(self.job.original_journal.read_bytes(), self.original)
 
@@ -369,6 +450,95 @@ class StateTests(unittest.TestCase):
         with self.assertRaises(RuntimeError): self.job.resume_accept()
         self.assertIn(b'=false', self.job.env.read_bytes())
 
+
+class EvidenceAndObservationTests(unittest.TestCase):
+    def test_exact_sealed_evidence_and_context(self):
+        raw = SEALED_EVIDENCE
+        evidence = C.validate_evidence(raw)
+        self.assertEqual(evidence['exception']['revision'], 445)
+        for damaged in (raw + b' ', raw.replace(b'62900', b'62901'), raw.replace(b'HTTP502', b'HTTP503')):
+            with self.assertRaises(RuntimeError): C.validate_evidence(damaged)
+        for change in ('release', 'version', 'observations', 'exception', 'financial_identity'):
+            mutated = copy.deepcopy(evidence); mutated[change] = None
+            altered = json.dumps(mutated).encode()
+            with patch.object(C, 'EVIDENCE_SHA', C.sha(altered)):
+                with self.assertRaises((RuntimeError, TypeError)): C.validate_evidence(altered)
+
+    def test_latest_initial_freshness_only_then_exact_frozen_identity(self):
+        report = observation_report()
+        frozen = C.validate_observations(report)
+        for age in (-1, 121, float('nan'), float('inf')):
+            with self.subTest(age=age), self.assertRaises(RuntimeError): C.validate_observations(observation_report(age))
+        old = observation_report(1000)
+        self.assertEqual(C.validate_observations(old, frozen), frozen)
+        for field in ('id', 'row_hash', 'proof_hash', 'created_at'):
+            altered = observation_report()
+            altered['latest'][field] = {'id': 601, 'row_hash': 'c' * 32, 'proof_hash': 'c' * 64, 'created_at': 1001.0}[field]
+            if field == 'created_at': altered['freshness_age_seconds'] = 19.0
+            with self.subTest(field=field), self.assertRaises(RuntimeError): C.validate_observations(altered, frozen)
+
+    def test_readonly_probe_paid_observation_rejects_bad_identity_hash_currency_and_counterproof(self):
+        probe = {'__name__': 'fixture'}
+        exec(C.OBSERVATION_PROBE, probe)
+        payment = {'status': 'success', 'amount_minor': 62900, 'final_amount_minor': 62900,
+                   'currency': 'UAH', 'currency_code': 980, 'has_cancellations': False, 'identity': 'valid'}
+        def observation():
+            proof = {'payment': copy.deepcopy(payment), 'fiscal': {'checks': []}}
+            return types.SimpleNamespace(order_id=7, status='mono_checkbox_receipt_pending', proof=proof,
+                                         proof_hash=C.sha(json.dumps(proof, sort_keys=True).encode()))
+        mono = types.SimpleNamespace(digest=lambda proof: C.sha(json.dumps(proof, sort_keys=True).encode()),
+                                     candidate_matches=lambda proof, request, candidate: proof.get('identity') == 'valid')
+        good = observation(); probe['paid_observation'](good, None, None, mono)
+        for change in ('missing', 'hash', 'identity', 'currency', 'currency_code', 'final_amount', 'amount', 'cancellation', 'fiscal', 'status', 'order', 'extra_proof'):
+            item = observation()
+            if change == 'missing': item.proof['payment'] = None
+            elif change == 'hash': item.proof_hash = 'd' * 64
+            elif change == 'identity': item.proof['payment']['identity'] = 'wrong'
+            elif change == 'currency': item.proof['payment']['currency'] = 'USD'
+            elif change == 'currency_code': item.proof['payment']['currency_code'] = '980'
+            elif change == 'final_amount': item.proof['payment']['final_amount_minor'] = 1
+            elif change == 'amount': item.proof['payment']['amount_minor'] = 1
+            elif change == 'status': item.proof['payment']['status'] = 'created'
+            elif change == 'order': item.order_id = 8
+            elif change == 'extra_proof': item.proof['unexpected'] = True
+            elif change == 'cancellation': item.proof['payment']['has_cancellations'] = True
+            else: item.proof['fiscal']['checks'] = [{'accepted': True}]
+            if change != 'hash': item.proof_hash = mono.digest(item.proof)
+            with self.subTest(change=change), self.assertRaises(ValueError): probe['paid_observation'](item, None, None, mono)
+
+
+    def test_observation_report_shape_and_false_proof_flags_rejected(self):
+        for field in ('ok', 'historical_valid', 'canonical_payment_valid', 'binding_valid'):
+            for value in (False, 1, 'true', None):
+                report = observation_report(); report[field] = value
+                with self.subTest(field=field, value=value), self.assertRaises(RuntimeError):
+                    C.validate_observations(report)
+        for field in ('id', 'row_hash', 'proof_hash', 'created_at'):
+            report = observation_report(); del report['latest'][field]
+            with self.subTest(missing=field), self.assertRaises(RuntimeError): C.validate_observations(report)
+        for value in (True, '600', 443):
+            report = observation_report(); report['latest']['id'] = value
+            with self.subTest(id=value), self.assertRaises(RuntimeError): C.validate_observations(report)
+        for field in ('snapshot_clock', 'freshness_age_seconds'):
+            report = observation_report(); report[field] = True
+            with self.subTest(clock=field), self.assertRaises(RuntimeError): C.validate_observations(report)
+        report = observation_report(); report['snapshot_clock'] += 1
+        with self.assertRaises(RuntimeError): C.validate_observations(report)
+        report = observation_report(); report['extra'] = True
+        with self.assertRaises(RuntimeError): C.validate_observations(report)
+
+    def test_probe_uses_readonly_snapshot_real_backend_identity_and_no_transport(self):
+        import ast
+        tree = ast.parse(C.OBSERVATION_PROBE)
+        calls = [ast.unparse(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)]
+        self.assertIn('master_mono.canonical_payment', calls)
+        self.assertIn('mono.candidate_matches', calls)
+        self.assertIn('session.rollback', calls)
+        self.assertNotIn('session.commit', calls)
+        self.assertFalse(any(name.startswith(('httpx.', 'requests.', 'urllib.', 'subprocess.')) for name in calls))
+        self.assertIn('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ', C.OBSERVATION_PROBE)
+        self.assertIn('SET TRANSACTION READ ONLY', C.OBSERVATION_PROBE)
+        self.assertIn("historical[1].proof == {'payment': None, 'fiscal': None}", C.OBSERVATION_PROBE)
 
 class LeaseTests(unittest.TestCase):
     def fake_psql(self, fail=False):

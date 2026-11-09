@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Version 1, exact-release recovery. No original journal or release file writes.
+"""Version 2, exact-release recovery with one sealed historical unusable read. No original journal or release file writes.
 
 Execution needs the independently reviewed binding.json. Tests use fake boundaries.
 Never logs response_json, intent scope keys, provider URLs or environment bytes.
@@ -20,7 +20,7 @@ import threading
 import time
 import uuid
 
-VERSION = 1
+VERSION = 2
 APP = Path('/opt/soulcuts')
 RELEASE = APP / 'releases/20261109T191645Z-4044a8c'
 BACKUP = APP / 'backups/pilot-WLyzSOrK'
@@ -31,6 +31,14 @@ MANIFEST_SHA = '4b926b3b0c5637bfe84ae93f6191250711844b6765fb991a4c79719cd5720ddd
 PG_IMAGE = 'postgres@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea'
 BASELINE_INTENTS = '5c3949eb723302e8fa82275f2d80420e'
 HEAD = '0151_master_mono_url_provenance'
+EVIDENCE_SHA = '6ca20d954441503088f50dea117c613d5647f26f0bf33c6e0237af264638a225'
+EXCEPTION_KEY_SHA = 'b2a913d02fb79302bc83538a7e9ee831ecc958b5e3be9332691c4755d5e34b21'
+EXCEPTION_ROW_MD5 = 'a637fede0c98232445d9da8074de6e76'
+HISTORICAL = [
+    {'id': 441, 'row_hash': '503d1ab80fed529910755dc462a5f085', 'proof_hash': '1e948340cdbd7982d6cdca4a4b2bf6cb53f894194c0ad521ff4f28c2e9dd4cd0', 'status': 'mono_checkbox_receipt_pending'},
+    {'id': 442, 'row_hash': 'c3bf23fb4752865b4d7ef09a0d41848d', 'proof_hash': '2635dab491f1c7dde11e1dd86d388342bad7d20803cdee8ebf88656626f42ed8', 'status': 'monobank_unavailable'},
+    {'id': 443, 'row_hash': '2a04a487e826a8bc0450b7a52fd485d2', 'proof_hash': '0fcf727e864839579d30eb75874588d56bd9ae6513f4a8141de6de5697ba1b89', 'status': 'mono_checkbox_receipt_pending'}]
+
 KEYS = {'enabled', 'order_id', 'revision', 'mode', 'paid', 'receipt_accepted', 'status',
         'amount_minor', 'invoice_id', 'payment_url', 'payment_url_source',
         'payment_url_expires_at', 'receipt_pdf_path', 'can_handover',
@@ -45,6 +53,104 @@ INTENTS_SQL = """SELECT coalesce(json_agg(x ORDER BY scope_key),'[]') FROM
 (SELECT scope_key,payload_hash,order_id,response_json,
  md5(to_jsonb(i)::text) row_hash FROM order_intents i) x;"""
 
+
+OBSERVATION_PROBE = r'''"""Read-only order 7 admission proof; stdin code, sealed evidence in argv[1]."""
+import asyncio
+import json
+import sys
+from datetime import datetime
+
+PINS = {
+    441: ('503d1ab80fed529910755dc462a5f085', '1e948340cdbd7982d6cdca4a4b2bf6cb53f894194c0ad521ff4f28c2e9dd4cd0'),
+    442: ('c3bf23fb4752865b4d7ef09a0d41848d', '2635dab491f1c7dde11e1dd86d388342bad7d20803cdee8ebf88656626f42ed8'),
+    443: ('2a04a487e826a8bc0450b7a52fd485d2', '0fcf727e864839579d30eb75874588d56bd9ae6513f4a8141de6de5697ba1b89'),
+}
+
+
+def require(value):
+    if not value:
+        raise ValueError('invalid')
+
+
+def paid_observation(obs, request, candidate, mono):
+    require(obs.order_id == 7 and obs.status == 'mono_checkbox_receipt_pending')
+    require(isinstance(obs.proof, dict) and set(obs.proof) == {'payment', 'fiscal'})
+    require(mono.digest(obs.proof) == obs.proof_hash)
+    payment, fiscal = obs.proof['payment'], obs.proof['fiscal']
+    require(isinstance(payment, dict) and mono.candidate_matches(payment, request, candidate))
+    require(payment.get('status') == 'success' and payment.get('amount_minor') == 62900)
+    require(payment.get('final_amount_minor') == 62900 and payment.get('currency') == 'UAH')
+    require(type(payment.get('currency_code')) is int and payment['currency_code'] == 980)
+    require(payment.get('has_cancellations') is False)
+    require(isinstance(fiscal, dict) and fiscal.get('checks') == [])
+
+
+async def validate(expected):
+    from sqlalchemy import text
+    from app.core.database import AsyncSessionLocal
+    from app.services import local_sales, master_mono
+    from app.models.master_mono import MasterMonoCreateCandidate
+    records = expected['observations']
+    require(len(records) == 3 and {x['id'] for x in records} == set(PINS))
+    require(all((x['row_hash'], x['proof_hash']) == PINS[x['id']] for x in records))
+    async with AsyncSessionLocal() as session:
+        try:
+            await session.execute(text('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ'))
+            await session.execute(text('SET TRANSACTION READ ONLY'))
+            order = await local_sales.load(session, 7)
+            binding = order.__dict__['master_mono_binding']
+            request = order.__dict__['master_mono_create_request']
+            candidate = await session.get(MasterMonoCreateCandidate, request.id)
+            require(order.id == 7 and order.simulation is False and candidate is not None)
+            require(binding.order_id == 7 and request.order_id == 7 and binding.create_request_id == request.id)
+            require(binding.authority == request.authority == 'provider')
+            require(binding.transport == request.transport == 'https')
+            require(binding.amount_minor == request.amount_minor == 62900)
+            require(binding.profile_hash == master_mono.digest(binding.profile))
+            require(request.profile_hash == binding.profile_hash and request.profile == binding.profile)
+            require(binding.invoice_id == candidate.invoice_id and binding.reference == request.reference)
+            payment = master_mono.canonical_payment(order)
+            require(payment is not None)
+            observations = {x.id: x for x in order.__dict__['master_mono_observations']}
+            historical = [observations[x] for x in (441, 442, 443)]
+            require(historical[0].created_at < historical[1].created_at < historical[2].created_at)
+            async def native(obs):
+                return await session.scalar(text('SELECT md5(to_jsonb(x)::text) FROM master_mono_observations x WHERE id=:id AND order_id=7'), {'id': obs.id})
+            for record in records:
+                obs = observations[record['id']]
+                require(obs.order_id == 7 and obs.status == record['status'])
+                require(obs.created_at == datetime.fromisoformat(record['at']))
+                require(await native(obs) == record['row_hash'])
+                require(obs.proof_hash == record['proof_hash'] == master_mono.digest(obs.proof))
+            require(historical[1].status == 'monobank_unavailable')
+            require(historical[1].proof == {'payment': None, 'fiscal': None})
+            for obs in (historical[0], historical[2]):
+                paid_observation(obs, request, candidate, master_mono)
+            latest = max(observations.values(), key=lambda x: x.id)
+            paid_observation(latest, request, candidate, master_mono)
+            require(latest.id >= 443 and latest.created_at >= historical[2].created_at)
+            latest_hash = await native(latest)
+            require(isinstance(latest_hash, str) and len(latest_hash) == 32)
+            clock = float(await session.scalar(text('SELECT extract(epoch FROM clock_timestamp())')))
+            created = latest.created_at.timestamp()
+            require(clock >= created)
+            return {'ok': True, 'order_id': 7, 'historical_valid': True,
+                    'canonical_payment_valid': True, 'binding_valid': True,
+                    'latest': {'id': latest.id, 'row_hash': latest_hash,
+                               'proof_hash': latest.proof_hash, 'created_at': created},
+                    'snapshot_clock': clock, 'freshness_age_seconds': clock - created}
+        finally:
+            await session.rollback()
+
+
+if __name__ == '__main__':
+    try:
+        result = asyncio.run(validate(json.loads(sys.argv[1])))
+    except Exception:
+        result = {'ok': False, 'error': 'order7_proof_validation_failed'}
+    print(json.dumps(result, sort_keys=True, allow_nan=False))
+    sys.exit(0 if result['ok'] else 1)
+'''
 
 def require(value, message):
     if not value:
@@ -106,23 +212,40 @@ def prove_append_only(baseline, current, baseline_hash=BASELINE_INTENTS):
     template_row = max(pending, key=lambda row: row['response_json']['revision'])
     template = response(template_row['response_json'])
     base_revision = template_row['response_json']['revision']
-    require(base_revision == 337, 'Unexpected trusted order7 baseline revision')
+    require(base_revision == 337 and template['amount_minor'] == 62900, 'Unexpected trusted order7 baseline revision')
     added = [after[key] for key in after.keys() - before.keys()]
     require(0 < len(added) <= 4096, 'Unexpected finite append-set size')
     revisions = []
+    exceptions = 0
     for row in added:
         require(type(row['order_id']) is int and row['order_id'] == 7, 'Added intent outside order7')
         value = row['response_json']
-        require(response(value) == template, 'Added response differs from trusted full template')
+        if type(value) is dict and value.get('status') == 'monobank_unavailable':
+            require(sha(row['scope_key'].encode()) == EXCEPTION_KEY_SHA
+                    and row['row_hash'] == EXCEPTION_ROW_MD5 and value.get('revision') == 445
+                    and type(value.get('revision')) is int
+                    and value.get('blocking_reasons') == ['monobank_unavailable'],
+                    'Not the exact preserved historical unusable read')
+            normalized = {**value, 'status': 'mono_checkbox_receipt_pending',
+                          'blocking_reasons': template['blocking_reasons']}
+            require(response(normalized) == template, 'Historical unusable read changed protected response fields')
+            exceptions += 1
+        else:
+            require(response(value) == template, 'Added response differs from trusted full template')
         revision = value['revision']
         expected = sha(json.dumps({'expected_revision': revision - 1}, sort_keys=True, separators=(',', ':')).encode())
         require(row['payload_hash'] == expected, 'Refresh payload hash differs')
         revisions.append(revision)
+    require(exceptions == 1, 'Exactly one pinned historical unusable read is required')
     require(sorted(revisions) == list(range(base_revision + 1, base_revision + len(added) + 1)),
             'Added revisions are not contiguous')
     return {'rows': {key: row['row_hash'] for key, row in after.items()},
             'prepared_intents': aggregate(current), 'added_count': len(added),
-            'first_revision': base_revision + 1, 'last_revision': max(revisions)}
+            'first_revision': base_revision + 1, 'last_revision': max(revisions),
+            'historical_unusable_read': {'scope_key_sha256': EXCEPTION_KEY_SHA,
+                'native_full_row_md5': EXCEPTION_ROW_MD5, 'order_id': 7, 'revision': 445,
+                'evidence_sha256': EVIDENCE_SHA, 'positive_payment_proof': False,
+                'http_association': 'temporal_correlation_sole_eligible_binding_not_direct_invoice_id'}}
 
 
 def verify_frozen(proof, rows):
@@ -134,10 +257,58 @@ def verify_frozen(proof, rows):
 def verify_binding(binding, actual):
     expected = {'version': VERSION, 'release': str(RELEASE), 'helper_sha256': HELPER_SHA,
                 'pins_sha256': PINS_SHA, 'manifest_sha256': MANIFEST_SHA,
-                'original_journal_sha256': ORIGINAL_JOURNAL_SHA}
+                'original_journal_sha256': ORIGINAL_JOURNAL_SHA, 'historical_evidence_sha256': EVIDENCE_SHA}
     require(binding == expected, 'Exact reviewed binding differs')
     require(actual == {key: value for key, value in expected.items() if key.endswith('_sha256')},
             'Exact source, pins, journal or manifest hash differs')
+
+
+def validate_evidence(raw):
+    require(sha(raw) == EVIDENCE_SHA, 'Exact historical evidence hash differs')
+    value = json.loads(raw)
+    require(value['version'] == 2 and value['release'] == RELEASE.name
+            and value['original_journal_sha256'] == ORIGINAL_JOURNAL_SHA
+            and value['kind'] == 'preserved-historical-unusable-read-observation-not-payment-proof',
+            'Historical evidence context differs')
+    require(value['exception'] == {'blocking_reasons': ['monobank_unavailable'], 'expected_revision': 444,
+        'native_full_row_md5': EXCEPTION_ROW_MD5, 'order_id': 7, 'revision': 445,
+        'scope_key_sha256': EXCEPTION_KEY_SHA, 'status': 'monobank_unavailable'},
+        'Historical exception binding differs')
+    require(value['financial_identity'] == {'amount_minor': 62900, 'binding_authority': 'provider',
+        'binding_transport': 'https', 'currency': 'UAH'}, 'Historical financial identity differs')
+    require([{key: row[key] for key in ('id', 'row_hash', 'proof_hash', 'status')}
+             for row in value['observations']] == HISTORICAL, 'Historical observation pins differ')
+    http = value['http_read_evidence']
+    require(http['active_master_binding_orders'] == [7] and http['raw_provider_ids_urls_omitted'] is True
+            and [row['http_status'] for row in http['status_events']] == [200, 502, 200]
+            and all(row['method'] == 'GET' and row['kind'] == 'invoice_status'
+                    and row['query_keys'] == [] and row['query_present'] is False for row in http['status_events']),
+            'Historical HTTP temporal correlation differs')
+    return value
+
+
+def validate_observations(report, frozen=None):
+    require(type(report) is dict and set(report) == {'ok', 'order_id', 'historical_valid',
+        'canonical_payment_valid', 'binding_valid', 'latest', 'snapshot_clock', 'freshness_age_seconds'},
+        'Unexpected readonly observation report')
+    require(report['ok'] is True and type(report['order_id']) is int and report['order_id'] == 7
+            and report['historical_valid'] is True and report['canonical_payment_valid'] is True
+            and report['binding_valid'] is True, 'Historical or canonical payment validation failed')
+    latest = report['latest']
+    require(type(latest) is dict and set(latest) == {'id', 'row_hash', 'proof_hash', 'created_at'}
+            and type(latest['id']) is int and latest['id'] > 443
+            and type(latest['row_hash']) is str and re.fullmatch('[0-9a-f]{32}', latest['row_hash'])
+            and type(latest['proof_hash']) is str and re.fullmatch('[0-9a-f]{64}', latest['proof_hash']), 'Latest observation identity differs')
+    import math
+    require(all(type(value) in (int, float) and math.isfinite(value) for value in
+                (latest['created_at'], report['snapshot_clock'], report['freshness_age_seconds']))
+            and abs(report['snapshot_clock'] - latest['created_at'] - report['freshness_age_seconds']) < 0.01,
+            'Invalid observation clock evidence')
+    if frozen is None:
+        require(0 <= report['freshness_age_seconds'] <= 120, 'Latest observation not fresh at initial freeze')
+    else:
+        require(latest == frozen, 'Frozen latest observation changed; no re-anchor permitted')
+    return copy.deepcopy(latest)
 
 
 def load_helper():
@@ -215,8 +386,10 @@ def make_controller(module):
             self.binding = binding
             self.guardian_pid = os.getpid()
             self.stage = 'preflight'
+            self.evidence_path = Path(__file__).resolve().with_name('historical-read-evidence.json')
+            self.evidence = validate_evidence(module.private_bytes(self.evidence_path))
             self.check_lease = check_lease
-            self.sidecar_dir = APP / 'backups/polling-recovery-v1-20261109T191645Z-4044a8c'
+            self.sidecar_dir = APP / 'backups/polling-recovery-v2-20261109T191645Z-4044a8c'
             self.sidecar = self.sidecar_dir / 'journal.json'
             self.original_journal = self.journal
             self.original_raw = module.private_bytes(self.original_journal)
@@ -224,7 +397,8 @@ def make_controller(module):
                 'helper_sha256': sha((RELEASE / 'scripts/master-mono-dispatch-cutover.py').read_bytes()),
                 'pins_sha256': sha((RELEASE / 'versions/production.env').read_bytes()),
                 'manifest_sha256': sha(module.private_bytes(BACKUP / 'manifest.json')),
-                'original_journal_sha256': sha(self.original_raw)})
+                'original_journal_sha256': sha(self.original_raw),
+                'historical_evidence_sha256': sha(module.private_bytes(self.evidence_path))})
             self.initial = json.loads(self.original_raw)
             require(self.initial['phase'] == 'paused_verified'
                     and self.initial['baseline']['head'] == HEAD
@@ -233,6 +407,7 @@ def make_controller(module):
             self.verify_original()
 
         def verify_original(self):
+            require(validate_evidence(module.private_bytes(self.evidence_path)) == self.evidence, 'Historical evidence changed')
             require(not self.directory.is_symlink() and self.directory.stat().st_uid == os.geteuid()
                     and module.stat.S_IMODE(self.directory.stat().st_mode) == 0o700, 'Private original cutover directory required')
             require(module.private_bytes(self.original_journal) == self.original_raw, 'Original journal changed')
@@ -268,6 +443,13 @@ def make_controller(module):
         def intents(self, container=None):
             return json.loads(self.sql(INTENTS_SQL, container))
 
+        def observations(self):
+            info = self.service('backend')
+            require(info['Config']['Image'] == self.backend_pin and info['State']['Running'],
+                    'Exact running pinned backend required for readonly proof')
+            return json.loads(self.run(['docker', 'exec', '-i', info['Id'], 'python', '-B', '-',
+                json.dumps(self.evidence, sort_keys=True, separators=(',', ':'))], OBSERVATION_PROBE.encode()))
+
         def financial(self, container=None):
             output = {}
             for table in FINANCIAL_TABLES:
@@ -287,7 +469,7 @@ def make_controller(module):
         def restore_proof(self):
             self.stage = 'restore_paired_backup'
             self.checkpoint()
-            name = 'ready-ui-recovery-v1-' + uuid.uuid4().hex[:12]
+            name = 'ready-ui-recovery-v2-' + uuid.uuid4().hex[:12]
             network = name + '-net'
             made_network = made_pg = False
             try:
@@ -330,6 +512,8 @@ def make_controller(module):
                 require(self.financial() == financial, 'Financial facts or stock changed from exact paired backup')
                 self.stage = 'prove_finite_intent_append'
                 proof = prove_append_only(baseline, self.intents())
+                self.stage = 'validate_historical_and_latest_observation'
+                proof['observation_freeze'] = validate_observations(self.observations())
                 self.checkpoint()
                 verify_frozen(proof, self.intents())
                 return proof, financial
@@ -407,6 +591,7 @@ def make_controller(module):
                         'prepared_intents': state['finite_intent_proof']['prepared_intents']}
             require(after['compatibility'] == expected, 'Exact finite intent union or binding changed')
             verify_frozen(state['finite_intent_proof'], self.intents())
+            validate_observations(self.observations(), state['finite_intent_proof']['observation_freeze'])
             require(self.financial() == state['paired_financial'], 'Paired financial facts or stock changed')
             self.checkpoint()
             return ids
@@ -439,7 +624,7 @@ def make_controller(module):
                 self.save(state, 'accepting')
                 self.checkpoint()
                 self.stage = 'switch_current'
-                temporary = APP / ('polling-current-v1-' + uuid.uuid4().hex)
+                temporary = APP / ('polling-current-v2-' + uuid.uuid4().hex)
                 require((APP / 'current').is_symlink()
                         and str((APP / 'current').resolve()) == state['previous'], 'Current pointer drifted')
                 try:
@@ -553,7 +738,7 @@ def main():
     job = cls(binding)
     if args.proof_sidecar:
         require(args.mode == 'inspect' and args.proof_sidecar.parent == APP / 'backups'
-                and args.proof_sidecar.name.startswith('polling-proof-v1-'), 'Exact own proof sidecar required')
+                and args.proof_sidecar.name.startswith('polling-proof-v2-'), 'Exact own proof sidecar required')
         job.sidecar_dir = args.proof_sidecar
         job.sidecar = job.sidecar_dir / 'journal.json'
     if args.mode == 'inspect':
@@ -576,7 +761,7 @@ def main():
             'Exact reviewed manual paired gates required')
     read_only = args.mode == 'prove'
     if read_only:
-        job.sidecar_dir = APP / 'backups' / ('polling-proof-v1-' + uuid.uuid4().hex)
+        job.sidecar_dir = APP / 'backups' / ('polling-proof-v2-' + uuid.uuid4().hex)
         job.sidecar = job.sidecar_dir / 'journal.json'
     lock = APP / 'release.lock'
     lock.mkdir()
