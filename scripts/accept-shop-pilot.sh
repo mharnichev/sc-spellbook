@@ -15,8 +15,18 @@ grep -Fxq 'phase=pending_acceptance' "${MARKER}" || { echo 'Release has not reac
 [[ ! -e "${APP_DIR}/master-qr-activation-required" ]] || { echo 'Master QR activation must be finalized or recovered before infrastructure acceptance.' >&2; exit 1; }
 [[ ! -e "${APP_DIR}/english-backfill-required" && ! -L "${APP_DIR}/english-backfill-required" ]] || { echo 'English backfill must be finalized or recovered before infrastructure acceptance.' >&2; exit 1; }
 [[ ! -e "${APP_DIR}/shop-online-activation-required" && ! -L "${APP_DIR}/shop-online-activation-required" ]] || { echo 'Shop online activation must be finalized or recovered before infrastructure acceptance.' >&2; exit 1; }
+failed_acceptance() {
+  local status=$?
+  trap - ERR
+  python3 "${ROOT_DIR}/scripts/master-mono-dispatch-cutover.py" refence --release "${ROOT_DIR}" || true
+  exit "${status}"
+}
+trap failed_acceptance ERR
 bash "${ROOT_DIR}/scripts/verify-background-owner.sh"
 python3 "${ROOT_DIR}/scripts/verify-deployed-images.py"
+python3 "${ROOT_DIR}/scripts/master-mono-dispatch-cutover.py" accepted --release "${ROOT_DIR}"
 ln -sfn "${ROOT_DIR}" "${APP_DIR}/current"
+python3 "${ROOT_DIR}/scripts/master-mono-dispatch-cutover.py" switched --release "${ROOT_DIR}"
 rm "${MARKER}"
+trap - ERR
 echo 'Pilot infrastructure accepted; public checkout remains disabled.'

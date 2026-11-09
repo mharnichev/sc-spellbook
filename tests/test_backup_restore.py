@@ -190,6 +190,16 @@ class BackupRestoreTests(unittest.TestCase):
         self.stub_docker()
         self.release_root = self.path / 'candidate'
         shutil.copytree(ROOT / 'scripts', self.release_root / 'scripts', ignore=shutil.ignore_patterns('__pycache__'))
+        # Cutover system boundary: its private state/config/runtime behavior is exercised
+        # by test_master_mono_dispatch_cutover; retain these deploy ordering/failure gates.
+        (self.release_root / 'scripts/master-mono-dispatch-cutover.py').write_text('''import json,os,sys
+from pathlib import Path
+mode=sys.argv[1]
+with open(os.environ['DOCKER_CALLS']+'.cutover','a') as stream: stream.write(mode+'\\n')
+with open(os.environ['DOCKER_CALLS'],'a') as stream: stream.write(json.dumps(['cutover',mode])+'\\n')
+if os.environ.get('FAIL_CUTOVER')==mode: raise SystemExit(1)
+if mode=='accepted' and os.environ.get('CUTOVER_RESUMED')!='1': raise SystemExit(1)
+''')
         incident_store = self.path / 'data/sentry-incidents'
         incident_store.mkdir(parents=True, mode=0o700)
         preflight = self.release_root / 'scripts/check-sentry-incident-store.py'
@@ -237,10 +247,47 @@ class BackupRestoreTests(unittest.TestCase):
         self.assertEqual((self.path / "current").resolve(), self.previous.resolve())
         self.assertTrue((self.path / "backend-recovery-required").exists())
         self.env.update(PILOT_MANUAL_GATE='verified', EXPECTED_RELEASE=str(self.release_root))
+        refused = self.run_script('accept-shop-pilot.sh')
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertTrue((self.path / 'backend-recovery-required').exists())
+        self.env['CUTOVER_RESUMED'] = '1'
         accepted = self.run_script('accept-shop-pilot.sh')
         self.assertEqual(accepted.returncode, 0, accepted.stderr)
         self.assertEqual((self.path / "current").resolve(), self.release_root)
         self.assertFalse((self.path / "backend-recovery-required").exists())
+
+    def test_cutover_order_and_failures_never_migrate_before_drain_or_accept_paused_pair(self):
+        self.prepare_deploy()
+        self.assertEqual(self.run_script('deploy.sh').returncode, 3)
+        calls = self.operations()
+        prepare = calls.index(['cutover', 'prepare'])
+        stop = next(i for i, call in enumerate(calls) if 'stop' in call)
+        pause = calls.index(['cutover', 'pause'])
+        dump = next(i for i, call in enumerate(calls) if any('pg_dump' in arg for arg in call))
+        up = next(i for i, call in enumerate(calls) if 'up' in call)
+        paused = calls.index(['cutover', 'paused'])
+        self.assertLess(prepare, stop); self.assertLess(stop, pause)
+        self.assertLess(pause, dump); self.assertLess(up, paused)
+        for phase in ('prepare', 'pause', 'paused'):
+            with self.subTest(phase=phase):
+                test = BackupRestoreTests(); test.setUp(); self.addCleanup(test.doCleanups)
+                test.prepare_deploy(); test.env['FAIL_CUTOVER'] = phase
+                self.assertNotIn(test.run_script('deploy.sh').returncode, (0, 3))
+                operations = test.operations()
+                if phase != 'paused':
+                    self.assertFalse(any('up' in call or any('pg_dump' in arg for arg in call) for call in operations))
+                self.assertTrue((test.path / 'backend-recovery-required').exists())
+                self.assertEqual((test.path / 'current').resolve(), test.previous)
+
+    def test_failed_cutover_acceptance_requests_refence_and_keeps_marker(self):
+        self.prepare_deploy()
+        self.assertEqual(self.run_script('deploy.sh').returncode, 3)
+        self.env.update(PILOT_MANUAL_GATE='verified', EXPECTED_RELEASE=str(self.release_root), CUTOVER_RESUMED='1',
+                        FAIL_CUTOVER='accepted')
+        self.assertNotEqual(self.run_script('accept-shop-pilot.sh').returncode, 0)
+        self.assertIn(['cutover', 'refence'], self.operations())
+        self.assertTrue((self.path / 'backend-recovery-required').exists())
+        self.assertEqual((self.path / 'current').resolve(), self.previous)
 
     def same_backend(self):
         (self.previous / 'versions/production.env').write_text((self.release_root / 'versions/production.env').read_text())
@@ -428,13 +475,13 @@ sys.modules['alembic.config'].Config = lambda path: object()
 sys.modules['alembic.script'].ScriptDirectory = types.SimpleNamespace(
     from_config=lambda config: types.SimpleNamespace(get_heads=lambda: HEADS))
 '''
-        for heads in (['0150_master_mono_expired_close'], ['0149_master_mono_opaque_route'], ['0148_master_mono_returned_url'], ['0147_pos_checkout_intents'], ['0144_master_rewards'], [],
-                      ['0150_master_mono_expired_close', 'other_branch'],
-                      ['0148_unreviewed'], ['0150_master_mono_expired_close'] * 2):
+        for heads in (['0151_master_mono_url_provenance'], ['0150_master_mono_expired_close'], ['0149_master_mono_opaque_route'], ['0148_master_mono_returned_url'], ['0147_pos_checkout_intents'], ['0144_master_rewards'], [],
+                      ['0151_master_mono_url_provenance', 'other_branch'],
+                      ['0148_unreviewed'], ['0151_master_mono_url_provenance'] * 2):
             with self.subTest(heads=heads):
                 result = subprocess.run(['python3', '-B', '-c', 'HEADS=' + repr(heads) + '\n' + harness + '\n' + code],
                                         capture_output=True, text=True)
-                expected = heads == ['0150_master_mono_expired_close']
+                expected = heads == ['0151_master_mono_url_provenance']
                 self.assertEqual(result.returncode == 0, expected, result.stderr)
                 if not expected:
                     self.assertIn('Backend release preflight failed:', result.stderr)
@@ -919,7 +966,7 @@ sys.modules['alembic.script'].ScriptDirectory = types.SimpleNamespace(
         self.assertIn('Settings()', code)
         self.assertIn('import app.services.master_mono', code)
         self.assertIn('import app.services.mono_checkbox_poll', code)
-        self.assertIn('["0150_master_mono_expired_close"]', code)
+        self.assertIn('["0151_master_mono_url_provenance"]', code)
         self.assertIn('import app.dependencies.shop_input', code)
         self.assertIn('import app.core.shop_request_size', code)
         for module in ('checkout_reminders', 'checkout_reminder_email', 'checkout_reminder_smtp'):

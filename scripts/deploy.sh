@@ -119,7 +119,7 @@ compose --profile release run --rm --no-deps --entrypoint python migrate -c \
     import app.services.checkout_reminder_smtp
     from alembic.config import Config
     from alembic.script import ScriptDirectory
-    if ScriptDirectory.from_config(Config("alembic.ini")).get_heads() != ["0150_master_mono_expired_close"]:
+    if ScriptDirectory.from_config(Config("alembic.ini")).get_heads() != ["0151_master_mono_url_provenance"]:
         raise RuntimeError("Unexpected migration head")
 except Exception:
     raise SystemExit("Backend release preflight failed: settings, modules or schema contract unavailable") from None'
@@ -128,12 +128,14 @@ BACKUP_DIR="$(mktemp -d "${APP_DIR}/backups/pilot-XXXXXXXX")"
 export BACKUP_DIR
 printf 'release=%s\nbackup=%s\n' "${ROOT_DIR}" "${BACKUP_DIR}" > "${RECOVERY_MARKER}"
 WRITERS_STOPPING=true
+python3 "${ROOT_DIR}/scripts/master-mono-dispatch-cutover.py" prepare --release "${ROOT_DIR}"
 compose stop --timeout 90 booking-sms-reminders backend
 remaining="$(compose ps --status running --services)"
 if printf '%s\n' "${remaining}" | grep -Eq '^(backend|booking-sms-reminders)$'; then
   echo 'Database writers did not stop' >&2
   false
 fi
+python3 "${ROOT_DIR}/scripts/master-mono-dispatch-cutover.py" pause --release "${ROOT_DIR}"
 bash "${ROOT_DIR}/scripts/backup-db.sh"
 bash "${ROOT_DIR}/scripts/backup-files.sh"
 python3 "${ROOT_DIR}/scripts/backup-manifest.py" "${BACKUP_DIR}"
@@ -202,7 +204,8 @@ if [[ "${BACKEND_CHANGED}" == false ]]; then
   exit 0
 fi
 printf 'phase=pending_acceptance\n' >> "${RECOVERY_MARKER}"
+python3 "${ROOT_DIR}/scripts/master-mono-dispatch-cutover.py" paused --release "${ROOT_DIR}"
 trap - ERR
 echo "Services started, NOT ACCEPTED: ${ROOT_DIR}. Recovery marker retained."
-echo 'Primary must verify authenticated watch scheduler names, queue progress and reminder utility, then run accept-shop-pilot.sh.'
+echo 'Dispatch remains disabled. Primary must finish paired manual gates, run master-mono-dispatch-cutover.py resume for this release, then accept-shop-pilot.sh.'
 exit 3
