@@ -186,12 +186,133 @@ class CutoverTests(unittest.TestCase):
                     with self.assertRaises(RuntimeError):
                         MODULE.Cutover(job.release, job.app)
 
-    def paused_runtime(self, directory):
+    def paused_runtime(self, directory, same_head=False):
         job = self.runtime(directory)
+        job.target = same_head
         job.prepare(); job.running = False; job.pause()
         job.target = True; job.generation = 3; job.running = True
         job.paused()
         return job
+
+    def test_same_head_release_completes_the_guarded_acceptance_cycle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job = self.paused_runtime(directory, same_head=True)
+            self.assertEqual(job.load()['baseline']['head'], MODULE.HEAD)
+            self.assertIn(b'=false', job.env.read_bytes())
+            with patch.dict(os.environ, PILOT_MANUAL_GATE='verified', EXPECTED_RELEASE=str(job.release)):
+                job.resume()
+            job.accepted()
+            (job.app / 'current').unlink(); (job.app / 'current').symlink_to(job.release)
+            job.switched()
+            self.assertEqual(job.load(allow_accepted_current=True)['phase'], 'accepted')
+            self.assertTrue(job.running)
+            self.assertIn(b'=true', job.env.read_bytes())
+
+    def test_drain_requires_the_exact_supported_captured_head(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job = self.runtime(directory)
+            for head in (MODULE.SOURCE, MODULE.HEAD):
+                baseline = {**job.snapshot(), 'head': head}
+                MODULE.verify_drain(baseline, {**baseline, 'sessions': 0})
+                for changed_head in (MODULE.SOURCE, MODULE.HEAD, 'unknown'):
+                    if changed_head == head:
+                        continue
+                    with self.subTest(head=head, changed_head=changed_head), self.assertRaises(RuntimeError):
+                        MODULE.verify_drain(baseline, {**baseline, 'head': changed_head, 'sessions': 0})
+            baseline = {**job.snapshot(), 'head': 'unknown'}
+            with self.assertRaises(RuntimeError):
+                MODULE.verify_drain(baseline, {**baseline, 'sessions': 0})
+
+    def test_unknown_head_cannot_be_prepared(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job = self.runtime(directory); snapshot = {**job.snapshot(), 'head': 'unknown'}
+            with patch.object(job, 'snapshot', return_value=snapshot), self.assertRaises(RuntimeError):
+                job.prepare()
+            self.assertFalse(job.journal.exists())
+            self.assertEqual(job.generation, 0)
+
+    def test_schema_drift_during_either_pause_snapshot_is_refused(self):
+        for same_head in (False, True):
+            for second_snapshot in (False, True):
+                with self.subTest(same_head=same_head, second_snapshot=second_snapshot), tempfile.TemporaryDirectory() as directory:
+                    job = self.runtime(directory); job.target = same_head; job.prepare(); job.running = False
+                    baseline = job.snapshot()
+                    changed = {**baseline, 'head': MODULE.SOURCE if same_head else MODULE.HEAD}
+                    snapshots = [baseline, changed] if second_snapshot else [changed]
+                    with patch.object(job, 'snapshot', side_effect=snapshots), self.assertRaises(RuntimeError):
+                        job.pause()
+                    self.assertFalse(job.running)
+                    self.assertEqual(job.load()['phase'], 'pause_intent' if second_snapshot else 'prepared')
+                    self.assertIn(b'=false' if second_snapshot else b'=true', job.env.read_bytes())
+
+    def test_same_head_early_recovery_only_reconciles_stopped_original_pair(self):
+        for phase in ('prepared', 'pause_intent'):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as directory:
+                job = self.runtime(directory); job.target = True; job.prepare()
+                state = job.load(); job.save(state, phase)
+                if phase == 'pause_intent':
+                    MODULE.cas_env(job.env, job.original(state), MODULE.paused_env(job.original(state)))
+                # Backup is not available at these checkpoints and cannot authorize a start.
+                (job.app / 'backups/paired/manifest.json').unlink()
+                with patch.dict(os.environ, PILOT_MANUAL_GATE='verified', EXPECTED_RELEASE=str(job.release)):
+                    job.recover_paused()
+                self.assertEqual(job.load()['phase'], 'paused')
+                self.assertEqual(job.generation, 0)
+                self.assertFalse(job.running)
+                self.assertIn(b'=false', job.env.read_bytes())
+
+    def test_same_head_target_recovery_requires_verified_backup_and_reviewed_phase(self):
+        for phase in ('paused', 'paused_verified', 'recovery_required'):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as directory:
+                job = self.paused_runtime(directory, same_head=True)
+                state = job.load(); job.save(state, phase)
+                generation = job.generation
+                with patch.dict(os.environ, PILOT_MANUAL_GATE='verified', EXPECTED_RELEASE=str(job.release)):
+                    job.recover_paused()
+                self.assertEqual(job.load()['phase'], 'paused_verified')
+                self.assertGreater(job.generation, generation)
+                self.assertTrue(job.running)
+                self.assertIn(b'=false', job.env.read_bytes())
+                with self.assertRaises(RuntimeError): job.accepted()
+
+    def test_same_head_recovery_never_starts_without_paired_backup_or_pending_acceptance(self):
+        for change in ('missing', 'checksum', 'marker'):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory:
+                job = self.paused_runtime(directory, same_head=True)
+                state = job.load(); job.save(state, 'paused')
+                if change == 'missing': (job.app / 'backups/paired/manifest.json').unlink()
+                if change == 'checksum': (job.app / 'backups/paired/database.dump').write_bytes(b'changed')
+                if change == 'marker':
+                    job.marker.write_text(job.marker.read_text().replace('phase=pending_acceptance\n', ''))
+                generation = job.generation
+                with patch.dict(os.environ, PILOT_MANUAL_GATE='verified', EXPECTED_RELEASE=str(job.release)):
+                    with self.assertRaises((RuntimeError, FileNotFoundError)): job.recover_paused()
+                self.assertEqual(job.generation, generation)
+                self.assertFalse(job.running)
+                self.assertIn(b'=false', job.env.read_bytes())
+                self.assertTrue(job.marker.exists())
+
+    def test_same_head_recovery_refuses_unknown_regressed_or_post_stop_drifted_head(self):
+        for change in ('unknown', 'regressed', 'post_stop'):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory:
+                job = self.paused_runtime(directory, same_head=True)
+                baseline = job.snapshot()
+                changed = {**baseline, 'head': 'unknown' if change == 'unknown' else MODULE.SOURCE, 'sessions': 0}
+                snapshots = [baseline, changed] if change == 'post_stop' else [changed]
+                generation = job.generation
+                with patch.object(job, 'snapshot', side_effect=snapshots), \
+                     patch.dict(os.environ, PILOT_MANUAL_GATE='verified', EXPECTED_RELEASE=str(job.release)):
+                    with self.assertRaises(RuntimeError): job.recover_paused()
+                self.assertEqual(job.generation, generation)
+                self.assertIn(b'=false', job.env.read_bytes())
+
+    def test_same_head_startup_still_requires_exact_target_head(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job = self.runtime(directory); job.target = True; job.prepare(); job.running = False; job.pause()
+            job.generation = 3; job.running = True; job.target = False
+            with self.assertRaises(RuntimeError): job.paused()
+            self.assertEqual(job.load()['phase'], 'paused')
+            self.assertIn(b'=false', job.env.read_bytes())
 
     def test_complete_fenced_cycle_requires_explicit_resume_and_new_container_identities(self):
         with tempfile.TemporaryDirectory() as directory:
