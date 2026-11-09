@@ -255,7 +255,7 @@ def make_controller(module):
 
         def sql(self, query, container=None):
             if container:
-                command = ['docker', 'exec', '-i', container, 'psql', '-X', '-q', '-At', '-v', 'ON_ERROR_STOP=1',
+                command = ['docker', 'exec', '-i', container, 'psql', '-h', '127.0.0.1', '-X', '-q', '-At', '-v', 'ON_ERROR_STOP=1',
                            '-U', 'rehearsal', '-d', 'restore_copy']
             else:
                 command = self.psql_command()
@@ -291,23 +291,39 @@ def make_controller(module):
             network = name + '-net'
             made_network = made_pg = False
             try:
+                self.stage = 'restore_network_create'
                 self.run(['docker', 'network', 'create', '--internal', network]); made_network = True
+                self.stage = 'restore_container_start'
                 self.run(['docker', 'run', '-d', '--pull=never', '--name', name, '--network', network,
                     '--memory=2g', '--cpus=1', '--pids-limit=256',
                     '--tmpfs', '/var/lib/postgresql/data:rw,size=1536m,mode=0700',
                     '-e', 'PGDATA=/var/lib/postgresql/data', '-e', 'POSTGRES_USER=rehearsal',
                     '-e', 'POSTGRES_DB=restore_copy', '-e', 'POSTGRES_INITDB_ARGS=--locale=en_US.utf8',
                     '-e', 'POSTGRES_HOST_AUTH_METHOD=trust', PG_IMAGE]); made_pg = True
+                self.stage = 'restore_final_tcp_ready'
                 self.run(['docker', 'exec', name, 'sh', '-ec',
-                    'for i in $(seq 1 60); do pg_isready -U rehearsal -d restore_copy && exit 0; sleep 1; done; exit 1'])
+                    'for i in $(seq 1 60); do pg_isready -h 127.0.0.1 -U rehearsal -d restore_copy && exit 0; sleep 1; done; exit 1'])
+                self.stage = 'restore_archive_load'
                 dump, = BACKUP.glob('*.dump')
                 with dump.open('rb') as stream:
                     result = subprocess.run(['docker', 'exec', '-i', name, 'pg_restore', '--exit-on-error',
-                        '--single-transaction', '--no-owner', '--no-privileges', '-U', 'rehearsal', '-d', 'restore_copy'],
-                        stdin=stream, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=180)
+                        '--single-transaction', '--no-owner', '--no-privileges', '-h', '127.0.0.1', '-U', 'rehearsal', '-d', 'restore_copy'],
+                        stdin=stream, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=180)
+                if result.returncode != 0:
+                    stderr = result.stderr or b''
+                    module.atomic_bytes(self.sidecar_dir / 'restore.stderr.private', stderr[:8192])
+                    lower = stderr.lower()
+                    self.failure_detail = (
+                        'database_missing' if b'database' in lower and b'does not exist' in lower else
+                        'server_disconnected' if b'terminating connection' in lower or b'server closed the connection' in lower else
+                        'connection_refused' if b'connection refused' in lower or b'could not connect' in lower else
+                        'archive_or_sql_rejected')
                 require(result.returncode == 0, 'Isolated paired restore failed')
+                self.stage = 'restore_schema_check'
                 require(self.sql('SELECT version_num FROM alembic_version;', name) == HEAD, 'Restored schema differs')
+                self.stage = 'restore_baseline_intents_read'
                 baseline = self.intents(name)
+                self.stage = 'restore_financial_read'
                 financial = self.financial(name)
                 self.checkpoint()
                 self.stage = 'prove_financial_facts'
@@ -317,6 +333,9 @@ def make_controller(module):
                 self.checkpoint()
                 verify_frozen(proof, self.intents())
                 return proof, financial
+            except BaseException as error:
+                self.record_failure(error)
+                raise
             finally:
                 try:
                     if made_pg:
@@ -450,7 +469,8 @@ def make_controller(module):
                 stage = getattr(self, 'stage', 'preflight')
                 module.persist(self.sidecar_dir / 'failure.json', {
                     'stage': stage, 'reason_code': stage + '_failed',
-                    'exception_class': type(error).__name__})
+                    'exception_class': type(error).__name__,
+                    'detail_code': getattr(self, 'failure_detail', None)})
 
         def emergency_fence(self, state=None):
             # Independent of lease/pins validation: stop always precedes config restore.

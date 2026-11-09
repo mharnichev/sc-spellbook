@@ -264,6 +264,60 @@ class StateTests(unittest.TestCase):
         self.assertEqual(json.loads(self.job.sidecar.read_bytes())['phase'], 'recovery_required')
         self.assertEqual(self.job.original_journal.read_bytes(), self.original)
 
+    def test_restore_waits_for_final_tcp_and_uses_it_for_archive_and_sql(self):
+        bin_dir = self.job.app / 'fake-bin'; bin_dir.mkdir()
+        trace = self.job.app / 'readiness.trace'; ready = self.job.app / 'final.ready'
+        (bin_dir / 'pg_isready').write_text('#!/bin/sh\n' +
+            'if [ -f "$FINAL_READY" ]; then echo final_tcp >> "$READINESS_TRACE"; exit 0; fi\n' +
+            'case "$*" in *"-h 127.0.0.1"*) echo temporary_tcp_refused >> "$READINESS_TRACE"; exit 1;;\n' +
+            '*) echo premature_socket_ready >> "$READINESS_TRACE"; exit 0;; esac\n')
+        (bin_dir / 'sleep').write_text('#!/bin/sh\ntouch "$FINAL_READY"\n')
+        for path in bin_dir.iterdir(): path.chmod(0o700)
+        before, after = rows()
+        self.job.intents = lambda container=None: copy.deepcopy(before if container else after)
+        real_run = subprocess.run
+        seen = []
+        def boundary_run(command, data=None):
+            seen.append(command)
+            if command[:2] == ['docker', 'exec'] and 'pg_isready' in command[-1]:
+                result = real_run(['sh', '-ec', command[-1]], capture_output=True,
+                    env={**os.environ, 'PATH': str(bin_dir) + ':' + os.environ['PATH'],
+                         'FINAL_READY': str(ready), 'READINESS_TRACE': str(trace)})
+                self.assertEqual(result.returncode, 0)
+                self.assertEqual(trace.read_text().splitlines(), ['temporary_tcp_refused', 'final_tcp'])
+            if 'psql' in command:
+                self.assertIn('-h', command)
+                self.assertEqual(command[command.index('-h') + 1], '127.0.0.1')
+                return (C.HEAD + '\n').encode()
+            return b''
+        def archive_run(command, **kwargs):
+            self.assertEqual(trace.read_text().splitlines()[-1], 'final_tcp')
+            self.assertIn('-h', command)
+            self.assertEqual(command[command.index('-h') + 1], '127.0.0.1')
+            return types.SimpleNamespace(returncode=0, stderr=b'')
+        self.job.run = boundary_run
+        real_proof = C.prove_append_only
+        with patch.object(C.subprocess, 'run', side_effect=archive_run), \
+             patch.object(C, 'prove_append_only', side_effect=lambda baseline, current: real_proof(baseline, current, C.aggregate(before))):
+            proof, financial = self.job.restore_proof()
+        self.assertEqual(proof['added_count'], 2)
+        self.assertTrue(any('psql' in command for command in seen))
+        self.assertEqual(self.job.original_journal.read_bytes(), self.original)
+
+    def test_restore_error_records_exact_stage_and_bounded_private_stderr(self):
+        diagnostic = b'FATAL: database "restore_copy" does not exist\n' + b'PRIVATE_SYNTHETIC_PROVIDER_DATA' * 500
+        with patch.object(C.subprocess, 'run', return_value=types.SimpleNamespace(returncode=1, stderr=diagnostic)):
+            with self.assertRaises(RuntimeError): self.job.restore_proof()
+        failure = json.loads((self.job.sidecar_dir / 'failure.json').read_bytes())
+        self.assertEqual(failure['stage'], 'restore_archive_load')
+        self.assertEqual(failure['detail_code'], 'database_missing')
+        self.assertNotIn('PRIVATE_SYNTHETIC_PROVIDER_DATA', json.dumps(failure))
+        private = self.job.sidecar_dir / 'restore.stderr.private'
+        self.assertEqual(private.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(private.read_bytes(), diagnostic[:8192])
+        self.assertIn(b'=false', self.job.env.read_bytes())
+        self.assertEqual(self.job.original_journal.read_bytes(), self.original)
+
     def test_restore_cleanup_always_attempts_own_network_after_container_cleanup_failure(self):
         commands = []
         def run(command, data=None):
