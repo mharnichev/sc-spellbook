@@ -114,35 +114,26 @@ Rollback requires an explicit target, identical backend pin, no recovery marker,
 read-only schema/owner verification and frontend health checks; only frontend
 services are recreated. Backend-changing rollback remains forbidden.
 
-### Required manual acceptance
+### Server-side acceptance
 
-Using an existing authorized backoffice session (never mint an admin token):
-
-- Read Shop operations watch on the sole API process: role owner, state running,
-  no error, expected scheduler_names. Derive the list from candidate app.main and
-  effective config, not defaults alone. Required here: SMS queue, campaigns,
-  customer activity; preserve existing booking completion, review, waitlist,
-  repeat/master reminders, catalog caches, digest and configured Brevo/NP-directory.
-  NP tracking and all new Shop transports/mocks remain false. There is no 2h
-  booking-reminder scheduler in app.main.
-- Verify successive read-only queue snapshots/progress and classify the existing
-  accepted/failed jobs. Never force a send/resend to prove health. Verify the
-  separate reminder loop is single-instance, running its expected command/version,
-  and has no new errors. Reconcile uncertain outcomes before recovery/replay.
-- Check existing booking/admin flows, Shop login/member denial, public checkout
-  503, actual proxy peer/client attribution, stable mounted media and public/blog
-  pages/support behavior. Check 1-worker latency and DB-pool headroom.
-- Record evidence, timestamps, expected scheduler names and the accepted release
-  in the operator change record. Then run from that exact release directory:
+Run the protected-data and paired backup checks for the exact release and
+complete the documented dispatch cutover resume. The resume command still
+requires the operator's paired-cutover attestation. Then run from that release
+directory:
 
 ```sh
-PILOT_MANUAL_GATE=verified EXPECTED_RELEASE="$PWD" bash scripts/accept-shop-pilot.sh
+EXPECTED_RELEASE="$PWD" bash scripts/accept-shop-pilot.sh
 ```
 
-Acceptance rechecks existing owner logs/DB lock, updates current and removes the
-marker. It does not turn on checkout/providers. Owner verification remains a point
-in time, not ongoing monitoring: configure alerts and a controlled owner restart
-runbook; followers do not promote themselves.
+Acceptance checks the recovery marker and journal, then verifies running image
+IDs, migration readiness, the API owner and the reminder process on the server.
+It reports read-only queue totals and matching reminder error log counts for
+operational review. Existing jobs and error counts are not automatic release
+failures. The production administrator's browser session is not needed.
+Verify protected Backoffice routes and role permissions in CI or staging.
+Keep the release-specific checks for public routes, pilot state and protected
+data in the release record. After the checks pass, acceptance records the
+transition, updates current and removes the marker.
 
 Image identity is also mandatory before pending acceptance, acceptance itself, and
 frontend deploy/rollback current-link updates. `verify-deployed-images.py` reads

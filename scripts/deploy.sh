@@ -119,10 +119,19 @@ compose --profile release run --rm --no-deps --entrypoint python migrate -c \
     import app.services.checkout_reminder_smtp
     from alembic.config import Config
     from alembic.script import ScriptDirectory
-    if ScriptDirectory.from_config(Config("alembic.ini")).get_heads() != ["0151_master_mono_url_provenance"]:
+    if ScriptDirectory.from_config(Config("alembic.ini")).get_heads() != ["0152_shop_online_admin_cancel"]:
         raise RuntimeError("Unexpected migration head")
 except Exception:
     raise SystemExit("Backend release preflight failed: settings, modules or schema contract unavailable") from None'
+source_is_0151="$(compose exec -T postgres sh -ec '
+  export PGOPTIONS="-c default_transaction_read_only=on -c statement_timeout=5000 -c lock_timeout=1000"
+  exec psql -XqAt -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "$1"
+' _ "SELECT count(*) = 1 AND count(*) FILTER (WHERE version_num = '0151_master_mono_url_provenance') = 1 FROM public.alembic_version")"
+[[ "${source_is_0151}" == t ]] || {
+  echo 'Fresh 0152 deployment requires the exact live 0151 schema; no writers stopped.' >&2
+  exit 1
+}
+python3 "${ROOT_DIR}/scripts/master-mono-dispatch-cutover.py" verify-lease --release "${ROOT_DIR}"
 mkdir -p "${APP_DIR}/backups" "${APP_DIR}/releases"
 BACKUP_DIR="$(mktemp -d "${APP_DIR}/backups/pilot-XXXXXXXX")"
 export BACKUP_DIR
@@ -196,16 +205,17 @@ for service in postgres backend booking-sms-reminders public-site blog admin-app
   done
   if [[ "${healthy}" != true ]]; then echo "Service not ready: ${service}" >&2; false; fi
 done
-bash "${ROOT_DIR}/scripts/verify-background-owner.sh"
-python3 "${ROOT_DIR}/scripts/verify-deployed-images.py"
 if [[ "${BACKEND_CHANGED}" == false ]]; then
+  bash "${ROOT_DIR}/scripts/verify-release-runtime.sh" "${ROOT_DIR}"
   ln -sfn "${ROOT_DIR}" "${CURRENT_LINK}"
   echo "Frontend-only deployment completed: ${ROOT_DIR}; backend and writers unchanged."
   exit 0
 fi
+bash "${ROOT_DIR}/scripts/verify-background-owner.sh"
+python3 "${ROOT_DIR}/scripts/verify-deployed-images.py"
 printf 'phase=pending_acceptance\n' >> "${RECOVERY_MARKER}"
 python3 "${ROOT_DIR}/scripts/master-mono-dispatch-cutover.py" paused --release "${ROOT_DIR}"
 trap - ERR
 echo "Services started, NOT ACCEPTED: ${ROOT_DIR}. Recovery marker retained."
-echo 'Dispatch remains disabled. Primary must finish paired manual gates, run master-mono-dispatch-cutover.py resume for this release, then accept-shop-pilot.sh.'
+echo 'Dispatch remains disabled. Complete the paired cutover resume for this release, then run accept-shop-pilot.sh for server-side acceptance.'
 exit 3
