@@ -119,16 +119,16 @@ compose --profile release run --rm --no-deps --entrypoint python migrate -c \
     import app.services.checkout_reminder_smtp
     from alembic.config import Config
     from alembic.script import ScriptDirectory
-    if ScriptDirectory.from_config(Config("alembic.ini")).get_heads() != ["0152_shop_online_admin_cancel"]:
+    if ScriptDirectory.from_config(Config("alembic.ini")).get_heads() != ["0153_order_owner_archive"]:
         raise RuntimeError("Unexpected migration head")
 except Exception:
     raise SystemExit("Backend release preflight failed: settings, modules or schema contract unavailable") from None'
-source_is_0151="$(compose exec -T postgres sh -ec '
+source_is_0152="$(compose exec -T postgres sh -ec '
   export PGOPTIONS="-c default_transaction_read_only=on -c statement_timeout=5000 -c lock_timeout=1000"
   exec psql -XqAt -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "$1"
-' _ "SELECT count(*) = 1 AND count(*) FILTER (WHERE version_num = '0151_master_mono_url_provenance') = 1 FROM public.alembic_version")"
-[[ "${source_is_0151}" == t ]] || {
-  echo 'Fresh 0152 deployment requires the exact live 0151 schema; no writers stopped.' >&2
+' _ "SELECT count(*) = 1 AND count(*) FILTER (WHERE version_num = '0152_shop_online_admin_cancel') = 1 FROM public.alembic_version")"
+[[ "${source_is_0152}" == t ]] || {
+  echo 'Fresh 0153 deployment requires the exact live 0152 schema; no writers stopped.' >&2
   exit 1
 }
 python3 "${ROOT_DIR}/scripts/master-mono-dispatch-cutover.py" verify-lease --release "${ROOT_DIR}"
