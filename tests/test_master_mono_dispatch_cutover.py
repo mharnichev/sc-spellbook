@@ -154,7 +154,7 @@ class CutoverTests(unittest.TestCase):
 
             def snapshot(self):
                 return dict(head=MODULE.HEAD if self.target else MODULE.SOURCE, watermark='private timestamp',
-                            sessions=2 if self.running else 0, requests=self.requests,
+                            sessions=2 if self.running else 0, requests=self.requests, lease_verified=True,
                             unresolved=[{'id': 1, 'order_id': 3, 'hash': 'a'}, {'id': 2, 'order_id': 4, 'hash': 'b'}],
                             closures=2, closure_orders=[5, 6], conflicts=0, protected={'orders': 'same', 'stock': 'same'}, compatibility='same')
 
@@ -465,6 +465,19 @@ class CutoverTests(unittest.TestCase):
             job = self.paused_runtime(directory)
             (job.app / 'current').unlink(); (job.app / 'current').symlink_to(job.release)
             with self.assertRaises(RuntimeError): job.load(allow_accepted_current=True)
+
+    def test_lost_lease_after_current_switch_does_not_commit_acceptance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job = self.paused_runtime(directory)
+            with patch.dict(os.environ, PILOT_MANUAL_GATE='verified', EXPECTED_RELEASE=str(job.release)):
+                job.resume()
+            job.accepted()
+            (job.app / 'current').unlink(); (job.app / 'current').symlink_to(job.release)
+            with patch.object(job, 'snapshot', return_value={'lease_verified': False}):
+                with self.assertRaisesRegex(RuntimeError, 'lease required'):
+                    job.switched()
+            self.assertTrue(job.marker.exists())
+            self.assertEqual(job.load(allow_accepted_current=True)['phase'], 'accepting')
 
     def test_forward_recovery_after_current_switch_never_reverts_pointer_or_starts_old_code(self):
         with tempfile.TemporaryDirectory() as directory:

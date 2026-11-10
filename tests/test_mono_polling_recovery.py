@@ -199,6 +199,10 @@ class StateTests(unittest.TestCase):
         cls.module = cls.fixture['MODULE']
 
     def setUp(self):
+        # Production loads the sealed helper from the original 0151 release.
+        legacy_helper = patch.multiple(self.module, SOURCE='0150_master_mono_expired_close', HEAD=C.HEAD)
+        legacy_helper.start()
+        self.addCleanup(legacy_helper.stop)
         self.exception_pin = patch.object(C, 'EXCEPTION_KEY_SHA', fixture_exception_key())
         self.exception_pin.start(); self.addCleanup(self.exception_pin.stop)
         self.tmp = tempfile.TemporaryDirectory()

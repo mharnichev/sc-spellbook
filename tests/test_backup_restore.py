@@ -59,6 +59,12 @@ if "run" in args and args[-1] == "migrate" and os.environ.get("FAIL_MIGRATE"):
     sys.exit(1)
 if "app.core.migration_readiness" in args and os.environ.get("FAIL_SCHEMA"):
     sys.exit(1)
+if any("SELECT count(*) = 1 AND count(*) FILTER" in arg for arg in args):
+    assert "exec" in args and "postgres" in args
+    assert any("default_transaction_read_only=on" in arg for arg in args)
+    if os.environ.get("FAIL_SOURCE_HEAD_QUERY"):
+        sys.exit(1)
+    print(os.environ.get("TEST_SOURCE_HEAD_MATCH", "t")); sys.exit(0)
 if any("count(*) FROM pg_locks" in arg for arg in args) and os.environ.get("FAIL_LOCK"):
     sys.exit(1)
 if any("Backend release preflight failed:" in arg for arg in args) and os.environ.get("FAIL_PREFLIGHT"):
@@ -71,6 +77,8 @@ if "ps" in args:
     stopped = os.path.exists(os.environ["DOCKER_CALLS"] + ".stopped")
     print(hashlib.sha256(args[-1].encode()).hexdigest() if "-q" in args else "" if stopped else os.environ.get("RUNNING_WRITERS", "backend\\nbooking-sms-reminders"))
 if "inspect" in args:
+    if any("RestartCount" in arg for arg in args):
+        print("running 2026-10-19T00:00:00Z 0"); sys.exit(0)
     print("2026-10-19T00:00:00Z" if any("StartedAt" in arg for arg in args) else "unhealthy" if os.environ.get("FAIL_HEALTH") else "healthy")
 if "logs" in args:
     print("background_workers state=failed role=owner code=worker_exited" if os.environ.get("FAIL_OWNER") else "background_workers state=running role=owner code=None")
@@ -246,7 +254,8 @@ if mode=='accepted' and os.environ.get('CUTOVER_RESUMED')!='1': raise SystemExit
         self.assertEqual(len(json.loads(manifest.read_text())), 2)
         self.assertEqual((self.path / "current").resolve(), self.previous.resolve())
         self.assertTrue((self.path / "backend-recovery-required").exists())
-        self.env.update(PILOT_MANUAL_GATE='verified', EXPECTED_RELEASE=str(self.release_root))
+        self.env.pop('PILOT_MANUAL_GATE', None)
+        self.env['EXPECTED_RELEASE'] = str(self.release_root)
         refused = self.run_script('accept-shop-pilot.sh')
         self.assertNotEqual(refused.returncode, 0)
         self.assertTrue((self.path / 'backend-recovery-required').exists())
@@ -475,13 +484,13 @@ sys.modules['alembic.config'].Config = lambda path: object()
 sys.modules['alembic.script'].ScriptDirectory = types.SimpleNamespace(
     from_config=lambda config: types.SimpleNamespace(get_heads=lambda: HEADS))
 '''
-        for heads in (['0151_master_mono_url_provenance'], ['0150_master_mono_expired_close'], ['0149_master_mono_opaque_route'], ['0148_master_mono_returned_url'], ['0147_pos_checkout_intents'], ['0144_master_rewards'], [],
-                      ['0151_master_mono_url_provenance', 'other_branch'],
-                      ['0148_unreviewed'], ['0151_master_mono_url_provenance'] * 2):
+        for heads in (['0152_shop_online_admin_cancel'], ['0151_master_mono_url_provenance'], ['0150_master_mono_expired_close'], ['0149_master_mono_opaque_route'], ['0148_master_mono_returned_url'], ['0147_pos_checkout_intents'], ['0144_master_rewards'], [],
+                      ['0152_shop_online_admin_cancel', 'other_branch'],
+                      ['0148_unreviewed'], ['0152_shop_online_admin_cancel'] * 2):
             with self.subTest(heads=heads):
                 result = subprocess.run(['python3', '-B', '-c', 'HEADS=' + repr(heads) + '\n' + harness + '\n' + code],
                                         capture_output=True, text=True)
-                expected = heads == ['0151_master_mono_url_provenance']
+                expected = heads == ['0152_shop_online_admin_cancel']
                 self.assertEqual(result.returncode == 0, expected, result.stderr)
                 if not expected:
                     self.assertIn('Backend release preflight failed:', result.stderr)
@@ -839,13 +848,25 @@ sys.modules['alembic.script'].ScriptDirectory = types.SimpleNamespace(
         self.assertNotEqual(self.run_script('accept-shop-pilot.sh').returncode, 0)
         self.assertTrue((self.path / 'backend-recovery-required').exists())
 
-    def test_acceptance_requires_manual_gate_for_exact_release(self):
+    def test_acceptance_requires_exact_release(self):
         self.prepare_deploy()
         (self.path / 'backend-recovery-required').write_text(f'release={self.release_root}\nphase=pending_acceptance\n')
-        for overrides in ({}, {'PILOT_MANUAL_GATE': 'verified', 'EXPECTED_RELEASE': '/wrong/release'}):
-            self.env.update(overrides)
+        for release in ('', '/wrong/release'):
+            self.env['EXPECTED_RELEASE'] = release
             self.assertNotEqual(self.run_script('accept-shop-pilot.sh').returncode, 0)
             self.assertTrue((self.path / 'backend-recovery-required').exists())
+
+    def test_schema_mismatch_blocks_acceptance_after_resume(self):
+        self.prepare_deploy()
+        marker = self.path / 'backend-recovery-required'
+        marker.write_text(f'release={self.release_root}\nphase=pending_acceptance\n')
+        self.env.update(EXPECTED_RELEASE=str(self.release_root), CUTOVER_RESUMED='1', FAIL_SCHEMA='1')
+        result = self.run_script('accept-shop-pilot.sh')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(marker.exists())
+        self.assertEqual((self.path / 'current').resolve(), self.previous.resolve())
+        self.assertIn(['cutover', 'refence'], self.operations())
+        self.assertNotIn(['cutover', 'accepted'], self.operations())
 
     def test_absent_owner_lock_blocks_acceptance(self):
         self.prepare_deploy()
@@ -937,6 +958,22 @@ sys.modules['alembic.script'].ScriptDirectory = types.SimpleNamespace(
         self.assertFalse(any('stop' in call or 'up' in call for call in self.operations()))
         self.assertFalse((self.path / 'backend-recovery-required').exists())
 
+    def test_live_source_head_refusal_leaves_marker_and_writers_untouched(self):
+        for result, query_fails in (("f", False), ("", False), ("t\nf", False), ("t", True)):
+            with self.subTest(result=result, query_fails=query_fails):
+                test = type(self)()
+                test.setUp()
+                self.addCleanup(test.doCleanups)
+                test.prepare_deploy()
+                test.env["TEST_SOURCE_HEAD_MATCH"] = result
+                if query_fails:
+                    test.env["FAIL_SOURCE_HEAD_QUERY"] = "1"
+                self.assertNotEqual(test.run_script("deploy.sh").returncode, 0)
+                self.assertFalse((test.path / "backend-recovery-required").exists())
+                self.assertFalse(any("stop" in call or "up" in call or (
+                    "run" in call and call[-1] == "migrate" and "--entrypoint" not in call
+                ) for call in test.operations()))
+
     def test_unsafe_incident_store_aborts_before_writers_or_migrations(self):
         self.prepare_deploy()
         store = self.path / 'data/sentry-incidents'
@@ -966,7 +1003,7 @@ sys.modules['alembic.script'].ScriptDirectory = types.SimpleNamespace(
         self.assertIn('Settings()', code)
         self.assertIn('import app.services.master_mono', code)
         self.assertIn('import app.services.mono_checkbox_poll', code)
-        self.assertIn('["0151_master_mono_url_provenance"]', code)
+        self.assertIn('["0152_shop_online_admin_cancel"]', code)
         self.assertIn('import app.dependencies.shop_input', code)
         self.assertIn('import app.core.shop_request_size', code)
         for module in ('checkout_reminders', 'checkout_reminder_email', 'checkout_reminder_smtp'):

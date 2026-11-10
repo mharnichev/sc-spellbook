@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Private, fail-closed 0150/0151 -> 0151 dispatch fence. Never calls a provider."""
+"""Private, fail-closed 0151/0152 -> 0152 dispatch fence. Never calls a provider."""
 import argparse
 import datetime
 import hashlib
@@ -14,8 +14,8 @@ import tempfile
 import time
 
 
-SOURCE = '0150_master_mono_expired_close'
-HEAD = '0151_master_mono_url_provenance'
+SOURCE = '0151_master_mono_url_provenance'
+HEAD = '0152_shop_online_admin_cancel'
 FLAG = 'MASTER_MONO_INVOICE_CREATE_ENABLED'
 WRITERS = ('backend', 'booking-sms-reminders')
 
@@ -129,7 +129,23 @@ def verify_shutdown(info, logs, events, api=False):
             'API graceful shutdown log evidence missing')
 
 
-def snapshot_sql():
+def snapshot_sql(lease=None):
+    verified_lease = "SELECT NULL::integer AS pid WHERE false"
+    if lease is not None:
+        pid, start_us = lease
+        require(type(pid) is int and 0 < pid <= 2147483647
+                and isinstance(start_us, str) and re.fullmatch(r'[1-9][0-9]{14,17}', start_us),
+                'Invalid paired advisory lease identity')
+        verified_lease = f"""
+SELECT a.pid FROM pg_catalog.pg_stat_activity a
+WHERE a.pid={pid} AND a.pid<>pg_backend_pid()
+  AND ((extract(epoch FROM a.backend_start)*1000000)::numeric(20,0))::text='{start_us}'
+  AND a.datname=current_database() AND a.usename=current_user AND a.backend_type='client backend'
+  AND (SELECT count(*) FROM pg_catalog.pg_locks l WHERE l.pid=a.pid AND l.locktype='advisory'
+       AND l.granted AND l.mode='ExclusiveLock'
+       AND ((l.objsubid=2 AND (l.classid,l.objid) IN ((1396919372,13),(150,7)))
+         OR (l.objsubid=1 AND l.classid=1 AND l.objid=2835491905)))=3
+"""
     groups = [('orders', 'id'), ('order_items', 'order_id'), ('order_intents', 'order_id'),
               ('master_mono_create_requests', 'order_id'), ('master_mono_bindings', 'order_id'),
               ('order_payments', 'order_id'), ('fiscal_documents', 'order_id'),
@@ -137,13 +153,40 @@ def snapshot_sql():
               ('master_mono_expired_closures', 'order_id'), ('master_mono_closed_conflicts', 'order_id')]
     # Hash complete rows; never export provider URLs, identifiers, evidence or PII.
     fields = []
-    for table, key in groups:
-        fields.append("'%s',(SELECT json_build_object('count',count(*),'hash',md5(coalesce(string_agg(row_hash,'' ORDER BY row_hash),''))) FROM (SELECT md5(to_jsonb(t)::text) row_hash FROM %s t WHERE %s IN (3,4,5,6)) s)" % (table, table, key))
+    def fingerprint(table, condition, row='to_jsonb(t)'):
+        return (
+            f"'{table}',(SELECT json_build_object('count',count(*),"
+            " 'hash',md5(coalesce(string_agg(row_hash,'' ORDER BY row_hash),'')))"
+            f" FROM (SELECT md5(({row})::text) row_hash FROM public.{table} t WHERE {condition}) s)"
+        )
+
+    fields.extend(fingerprint(table, f't.{key} IN (3,4,5,6)') for table, key in groups)
     fields.append("'stock',(SELECT json_agg(t ORDER BY id) FROM (SELECT id,stock_quantity,reserved_quantity FROM products WHERE id IN (248,277)) t)")
+    order8 = [fingerprint('orders', 't.id = 8')]
+    for table in (
+        'order_items', 'inventory_movements', 'order_intents', 'order_payments',
+        'shop_payment_intents', 'shop_online_payment_requests', 'shop_operation_audits',
+        'shop_payment_evidence', 'shop_payment_resolution_cases', 'shop_payment_confirmations',
+        'shop_mono_checkbox_receipts', 'shop_mono_checkbox_observations', 'shop_checkbox_documents',
+        'order_shipments', 'order_handovers', 'fiscal_documents',
+    ):
+        condition = 't.order_id = 8'
+        if table in ('shop_online_payment_requests', 'shop_payment_evidence', 'shop_payment_resolution_cases'):
+            condition += ' OR t.intent_id IN (SELECT id FROM public.shop_payment_intents WHERE order_id = 8)'
+        order8.append(fingerprint(table, condition))
+    order8.append(fingerprint(
+        'products', 't.id IN (SELECT product_id FROM public.order_items WHERE order_id = 8)',
+        'jsonb_build_array(t.id,t.stock_quantity,t.reserved_quantity)',
+    ))
+    fields.append("'shop_order_8',json_build_object(" + ','.join(order8) + ')')
     return """BEGIN READ ONLY; SET LOCAL statement_timeout='8s';
+WITH verified_lease AS MATERIALIZED (""" + verified_lease + """)
 SELECT json_build_object(
  'head',(SELECT version_num FROM alembic_version), 'watermark',clock_timestamp(),
- 'sessions',(SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND backend_type='client backend' AND pid<>pg_backend_pid()),
+ 'lease_verified',EXISTS(SELECT FROM verified_lease),
+ 'sessions',(SELECT count(*) FROM pg_stat_activity a WHERE datname=current_database()
+             AND backend_type='client backend' AND a.pid<>pg_backend_pid()
+             AND NOT EXISTS(SELECT FROM verified_lease v WHERE v.pid=a.pid)),
  'requests',(SELECT md5(coalesce(string_agg(row_hash,'' ORDER BY row_hash),'')) FROM (SELECT md5(to_jsonb(q)::text) row_hash FROM master_mono_create_requests q) s),
  'compatibility',(SELECT json_object_agg(name,hash) FROM (
    SELECT 'bound' name,md5(coalesce(string_agg(row_hash,'' ORDER BY row_hash),'')) hash FROM (SELECT md5(to_jsonb(b)::text) row_hash FROM master_mono_bindings b) s
@@ -206,9 +249,17 @@ class Cutover:
         return json.loads(self.run(['docker', 'exec', info['Id'], 'python', '-c', FLAGS_CODE]))
 
     def snapshot(self):
+        pid = os.environ.get('CUTOVER_LEASE_PID', '')
+        require(re.fullmatch(r'[1-9][0-9]{0,9}', pid), 'Paired advisory lease PID required')
+        lease = int(pid), os.environ.get('CUTOVER_LEASE_START_US', '')
         postgres = self.service('postgres')['Id']
-        return json.loads(self.run(['docker', 'exec', '-i', postgres, 'sh', '-c',
-            'exec psql -X -q -A -t -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"'], snapshot_sql().encode()))
+        result = json.loads(self.run(['docker', 'exec', '-i', postgres, 'sh', '-c',
+            'exec psql -X -q -A -t -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"'], snapshot_sql(lease).encode()))
+        require(result['lease_verified'] is True, 'Paired advisory lease missing or lost')
+        return result
+
+    def verify_lease(self):
+        require(self.snapshot()['lease_verified'] is True, 'Paired advisory lease required')
 
     def load(self, allow_accepted_current=False):
         require(not self.directory.is_symlink() and self.directory.stat().st_uid == os.geteuid()
@@ -300,7 +351,7 @@ class Cutover:
             verify_flags(state['flags'][name], self.flags(info), paused)
             ids[name] = info['Id']
         after = self.snapshot()
-        require(after['head'] == HEAD, 'Exact target0151 required')
+        require(after['head'] == HEAD, 'Exact target 0152 required')
         for key in ('requests', 'unresolved', 'protected', 'compatibility', 'closures', 'closure_orders', 'conflicts'):
             require(after[key] == state['baseline'][key], 'Protected dispatch history changed: ' + key)
         return ids
@@ -428,12 +479,13 @@ class Cutover:
         require(state['phase'] == 'accepting' and (self.app / 'current').resolve() == self.release,
                 'Exact journaled current switch required')
         require(self.marker_matches().get('phase') == 'pending_acceptance', 'Pending acceptance marker required')
+        self.verify_lease()
         self.save(state, 'accepted')
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=('prepare', 'pause', 'paused', 'resume', 'accepted', 'switched', 'inspect', 'recover-paused', 'refence'))
+    parser.add_argument('mode', choices=('verify-lease', 'prepare', 'pause', 'paused', 'resume', 'accepted', 'switched', 'inspect', 'recover-paused', 'refence'))
     parser.add_argument('--release', type=Path, required=True)
     args = parser.parse_args()
     install_signal_handlers()

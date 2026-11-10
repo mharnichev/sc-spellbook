@@ -16,9 +16,10 @@ import uuid
 
 
 # Expected candidate schema for rehearsal, not a release acceptance pin.
-HEAD = "0151_master_mono_url_provenance"
+HEAD = "0152_shop_online_admin_cancel"
+PREVIOUS_HEAD = "0151_master_mono_url_provenance"
 BASE = "0110_nova_poshta_directory"
-SOURCE_HEADS = (BASE, "0129_shop_ingress_limits", "0134_shop_canonical_collation", "0136_category_names_en", "0137_shop_online_payment", "0138_shop_content_en", "0139_shop_input_guards", "0140_shop_order_receipt_snapshot", "0143_auto_checkout_checkpoint", "0144_master_rewards", "0146_merge_inventory_booking", "0147_pos_checkout_intents", "0148_master_mono_returned_url", "0149_master_mono_opaque_route", "0150_master_mono_expired_close", HEAD)
+SOURCE_HEADS = (BASE, "0129_shop_ingress_limits", "0134_shop_canonical_collation", "0136_category_names_en", "0137_shop_online_payment", "0138_shop_content_en", "0139_shop_input_guards", "0140_shop_order_receipt_snapshot", "0143_auto_checkout_checkpoint", "0144_master_rewards", "0146_merge_inventory_booking", "0147_pos_checkout_intents", "0148_master_mono_returned_url", "0149_master_mono_opaque_route", "0150_master_mono_expired_close", PREVIOUS_HEAD, HEAD)
 
 
 def source_archive_name(head):
@@ -40,7 +41,7 @@ def verify_source_copy(sql, expected):
 
 def verify_checkout_upgrade(sql, source_head):
     # A repeated rehearsal at HEAD may already contain legitimate reminder rows.
-    if source_head in ("0143_auto_checkout_checkpoint", "0144_master_rewards", "0146_merge_inventory_booking", "0147_pos_checkout_intents", "0148_master_mono_returned_url", "0149_master_mono_opaque_route", "0150_master_mono_expired_close", HEAD):
+    if source_head in ("0143_auto_checkout_checkpoint", "0144_master_rewards", "0146_merge_inventory_booking", "0147_pos_checkout_intents", "0148_master_mono_returned_url", "0149_master_mono_opaque_route", "0150_master_mono_expired_close", PREVIOUS_HEAD, HEAD):
         return None
     mismatch = sql('upgrade_copy', 'SELECT count(*) FROM products WHERE shop_price IS DISTINCT FROM COALESCE(recommended_retail_price, price)')
     if mismatch != '0':
