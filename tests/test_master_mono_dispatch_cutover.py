@@ -153,6 +153,9 @@ class CutoverTests(unittest.TestCase):
         marker = app / 'backend-recovery-required'
         marker.write_text(f'release={release.resolve()}\nbackup={backup}\nphase=pending_acceptance\n'); marker.chmod(0o600)
 
+        candidate = {MODULE.FLAG: True, 'DEBUG': False, MODULE.REFUND_FLAG: False,
+                     **dict.fromkeys(MODULE.CHECKOUT_FLAGS, False)}
+
         class Runtime(MODULE.Cutover):
             generation = 0
             running = True
@@ -169,13 +172,11 @@ class CutoverTests(unittest.TestCase):
             def flags(self, info):
                 create = b'=true' in self.env.read_bytes()
                 if self.generation > 0 or self.target:
-                    return {**self.candidate_flags()['backend'], MODULE.FLAG: create}
+                    return {**candidate, MODULE.FLAG: create}
                 return {MODULE.FLAG: create, 'DEBUG': False, MODULE.CHECKOUT_FLAGS[0]: True}
 
             def candidate_flags(self):
-                flags = {MODULE.FLAG: True, 'DEBUG': False, MODULE.REFUND_FLAG: False,
-                         **dict.fromkeys(MODULE.CHECKOUT_FLAGS, False)}
-                return {name: flags.copy() for name in MODULE.WRITERS}
+                return {name: candidate.copy() for name in MODULE.WRITERS}
 
             def snapshot(self):
                 return dict(head=MODULE.HEAD if self.target else MODULE.SOURCE, watermark='private timestamp',

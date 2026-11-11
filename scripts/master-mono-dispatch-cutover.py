@@ -338,7 +338,7 @@ class Cutover:
         verify_drain(baseline, {**baseline, 'sessions': 0})
         state = dict(release=str(self.release), previous=str((self.app / 'current').resolve(strict=True)),
                      pins_hash=digest((self.release / 'versions/production.env').read_bytes()),
-                     original_hash=digest(original), paused_hash=digest(paused), target_flags=target_flags,
+                     original_hash=digest(original), paused_hash=digest(paused), flags=flags, target_flags=target_flags,
                      writers={name: {'id': info['Id'], 'started': info['State']['StartedAt']} for name, info in writers.items()},
                      baseline=baseline, phase='prepared', captured=int(time.time()))
         for name in WRITERS:
