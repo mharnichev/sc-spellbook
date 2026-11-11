@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Private, fail-closed 0152/0153 -> 0153 dispatch fence. Never calls a provider."""
+"""Private, fail-closed 0153/0158 -> 0158 dispatch fence. Never calls a provider."""
 import argparse
 import datetime
 import hashlib
@@ -14,8 +14,8 @@ import tempfile
 import time
 
 
-SOURCE = '0152_shop_online_admin_cancel'
-HEAD = '0153_order_owner_archive'
+SOURCE = '0153_order_owner_archive'
+HEAD = '0158_shop_alert_intents'
 FLAG = 'MASTER_MONO_INVOICE_CREATE_ENABLED'
 WRITERS = ('backend', 'booking-sms-reminders')
 
@@ -351,7 +351,7 @@ class Cutover:
             verify_flags(state['flags'][name], self.flags(info), paused)
             ids[name] = info['Id']
         after = self.snapshot()
-        require(after['head'] == HEAD, 'Exact target 0153 required')
+        require(after['head'] == HEAD, 'Exact target 0158 required')
         for key in ('requests', 'unresolved', 'protected', 'compatibility', 'closures', 'closure_orders', 'conflicts'):
             require(after[key] == state['baseline'][key], 'Protected dispatch history changed: ' + key)
         return ids

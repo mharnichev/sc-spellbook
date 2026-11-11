@@ -484,13 +484,13 @@ sys.modules['alembic.config'].Config = lambda path: object()
 sys.modules['alembic.script'].ScriptDirectory = types.SimpleNamespace(
     from_config=lambda config: types.SimpleNamespace(get_heads=lambda: HEADS))
 '''
-        for heads in (['0153_order_owner_archive'], ['0152_shop_online_admin_cancel'], ['0151_master_mono_url_provenance'], ['0150_master_mono_expired_close'], ['0149_master_mono_opaque_route'], ['0148_master_mono_returned_url'], ['0147_pos_checkout_intents'], ['0144_master_rewards'], [],
-                      ['0153_order_owner_archive', 'other_branch'],
-                      ['0148_unreviewed'], ['0153_order_owner_archive'] * 2):
+        for heads in (['0158_shop_alert_intents'], ['0153_order_owner_archive'], ['0151_master_mono_url_provenance'], ['0150_master_mono_expired_close'], ['0149_master_mono_opaque_route'], ['0148_master_mono_returned_url'], ['0147_pos_checkout_intents'], ['0144_master_rewards'], [],
+                      ['0158_shop_alert_intents', 'other_branch'],
+                      ['0148_unreviewed'], ['0158_shop_alert_intents'] * 2):
             with self.subTest(heads=heads):
                 result = subprocess.run(['python3', '-B', '-c', 'HEADS=' + repr(heads) + '\n' + harness + '\n' + code],
                                         capture_output=True, text=True)
-                expected = heads == ['0153_order_owner_archive']
+                expected = heads == ['0158_shop_alert_intents']
                 self.assertEqual(result.returncode == 0, expected, result.stderr)
                 if not expected:
                     self.assertIn('Backend release preflight failed:', result.stderr)
@@ -1003,7 +1003,7 @@ sys.modules['alembic.script'].ScriptDirectory = types.SimpleNamespace(
         self.assertIn('Settings()', code)
         self.assertIn('import app.services.master_mono', code)
         self.assertIn('import app.services.mono_checkbox_poll', code)
-        self.assertIn('["0153_order_owner_archive"]', code)
+        self.assertIn('["0158_shop_alert_intents"]', code)
         self.assertIn('import app.dependencies.shop_input', code)
         self.assertIn('import app.core.shop_request_size', code)
         for module in ('checkout_reminders', 'checkout_reminder_email', 'checkout_reminder_smtp'):
