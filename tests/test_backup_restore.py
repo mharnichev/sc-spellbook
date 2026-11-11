@@ -203,11 +203,19 @@ class BackupRestoreTests(unittest.TestCase):
         (self.release_root / 'scripts/master-mono-dispatch-cutover.py').write_text('''import json,os,sys
 from pathlib import Path
 mode=sys.argv[1]
+if mode=='schema-pair':
+    print('0158_shop_alert_intents 0158_shop_alert_intents')
+    raise SystemExit(0)
 with open(os.environ['DOCKER_CALLS']+'.cutover','a') as stream: stream.write(mode+'\\n')
 with open(os.environ['DOCKER_CALLS'],'a') as stream: stream.write(json.dumps(['cutover',mode])+'\\n')
 if os.environ.get('FAIL_CUTOVER')==mode: raise SystemExit(1)
-if mode=='accepted' and os.environ.get('CUTOVER_RESUMED')!='1': raise SystemExit(1)
+if mode=='resume-under-lock':
+    Path(os.environ['DOCKER_CALLS']+'.resumed').touch()
+if mode=='accepted' and os.environ.get('CUTOVER_RESUMED')!='1' and not Path(os.environ['DOCKER_CALLS']+'.resumed').exists():
+    raise SystemExit(1)
 ''')
+        (self.release_root / 'scripts/hold-release-lease.py').write_text(
+            'import signal\nprint("CUTOVER_LEASE_PID=42 CUTOVER_LEASE_START_US=1770000000000000", flush=True)\nsignal.pause()\n')
         incident_store = self.path / 'data/sentry-incidents'
         incident_store.mkdir(parents=True, mode=0o700)
         preflight = self.release_root / 'scripts/check-sentry-incident-store.py'
@@ -241,7 +249,7 @@ if mode=='accepted' and os.environ.get('CUTOVER_RESUMED')!='1': raise SystemExit
     def test_backend_deploy_quiesces_writers_and_backs_up_files(self):
         self.prepare_deploy()
         result = self.run_script("deploy.sh")
-        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.operations()
         stop = next(i for i, call in enumerate(calls) if "stop" in call)
         dump = next(i for i, call in enumerate(calls) if any("pg_dump" in arg for arg in call))
@@ -252,22 +260,13 @@ if mode=='accepted' and os.environ.get('CUTOVER_RESUMED')!='1': raise SystemExit
         self.assertTrue(list((self.path / "backups").glob("pilot-*/*.tar.gz")))
         manifest, = (self.path / "backups").glob("pilot-*/manifest.json")
         self.assertEqual(len(json.loads(manifest.read_text())), 2)
-        self.assertEqual((self.path / "current").resolve(), self.previous.resolve())
-        self.assertTrue((self.path / "backend-recovery-required").exists())
-        self.env.pop('PILOT_MANUAL_GATE', None)
-        self.env['EXPECTED_RELEASE'] = str(self.release_root)
-        refused = self.run_script('accept-shop-pilot.sh')
-        self.assertNotEqual(refused.returncode, 0)
-        self.assertTrue((self.path / 'backend-recovery-required').exists())
-        self.env['CUTOVER_RESUMED'] = '1'
-        accepted = self.run_script('accept-shop-pilot.sh')
-        self.assertEqual(accepted.returncode, 0, accepted.stderr)
         self.assertEqual((self.path / "current").resolve(), self.release_root)
         self.assertFalse((self.path / "backend-recovery-required").exists())
+        self.assertFalse((self.path / "release.lock").exists())
 
     def test_cutover_order_and_failures_never_migrate_before_drain_or_accept_paused_pair(self):
         self.prepare_deploy()
-        self.assertEqual(self.run_script('deploy.sh').returncode, 3)
+        self.assertEqual(self.run_script('deploy.sh').returncode, 0)
         calls = self.operations()
         prepare = calls.index(['cutover', 'prepare'])
         stop = next(i for i, call in enumerate(calls) if 'stop' in call)
@@ -277,6 +276,8 @@ if mode=='accepted' and os.environ.get('CUTOVER_RESUMED')!='1': raise SystemExit
         paused = calls.index(['cutover', 'paused'])
         self.assertLess(prepare, stop); self.assertLess(stop, pause)
         self.assertLess(pause, dump); self.assertLess(up, paused)
+        self.assertLess(paused, calls.index(['cutover', 'resume-under-lock']))
+        self.assertLess(calls.index(['cutover', 'resume-under-lock']), calls.index(['cutover', 'accepted']))
         for phase in ('prepare', 'pause', 'paused'):
             with self.subTest(phase=phase):
                 test = BackupRestoreTests(); test.setUp(); self.addCleanup(test.doCleanups)
@@ -285,18 +286,31 @@ if mode=='accepted' and os.environ.get('CUTOVER_RESUMED')!='1': raise SystemExit
                 operations = test.operations()
                 if phase != 'paused':
                     self.assertFalse(any('up' in call or any('pg_dump' in arg for arg in call) for call in operations))
-                self.assertTrue((test.path / 'backend-recovery-required').exists())
+                self.assertEqual((test.path / 'backend-recovery-required').exists(), phase != 'prepare')
                 self.assertEqual((test.path / 'current').resolve(), test.previous)
 
     def test_failed_cutover_acceptance_requests_refence_and_keeps_marker(self):
+        for phase in ('resume-under-lock', 'accepted'):
+            with self.subTest(phase=phase):
+                case = BackupRestoreTests()
+                case.setUp()
+                self.addCleanup(case.doCleanups)
+                case.prepare_deploy()
+                case.env['FAIL_CUTOVER'] = phase
+                self.assertNotEqual(case.run_script('deploy.sh').returncode, 0)
+                self.assertIn(['cutover', 'refence'], case.operations())
+                self.assertTrue((case.path / 'backend-recovery-required').exists())
+                self.assertEqual((case.path / 'current').resolve(), case.previous)
+
+    def test_missing_lease_never_stops_writers(self):
         self.prepare_deploy()
-        self.assertEqual(self.run_script('deploy.sh').returncode, 3)
-        self.env.update(PILOT_MANUAL_GATE='verified', EXPECTED_RELEASE=str(self.release_root), CUTOVER_RESUMED='1',
-                        FAIL_CUTOVER='accepted')
-        self.assertNotEqual(self.run_script('accept-shop-pilot.sh').returncode, 0)
-        self.assertIn(['cutover', 'refence'], self.operations())
-        self.assertTrue((self.path / 'backend-recovery-required').exists())
-        self.assertEqual((self.path / 'current').resolve(), self.previous)
+        (self.release_root / 'scripts/hold-release-lease.py').write_text('raise SystemExit(1)\n')
+        result = self.run_script('deploy.sh')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Could not acquire the paired database lease', result.stderr)
+        self.assertFalse(any('stop' in call for call in self.operations()))
+        self.assertFalse((self.path / 'backend-recovery-required').exists())
+        self.assertFalse((self.path / 'release.lock').exists())
 
     def same_backend(self):
         (self.previous / 'versions/production.env').write_text((self.release_root / 'versions/production.env').read_text())
@@ -458,7 +472,7 @@ if mode=='accepted' and os.environ.get('CUTOVER_RESUMED')!='1': raise SystemExit
         self.prepare_deploy()
         self.env['FAIL_PREFLIGHT'] = '1'
         self.assertNotEqual(self.run_script('deploy.sh').returncode, 0)
-        code = next(call[-1] for call in self.operations()
+        code = next(call[-2] for call in self.operations()
                     if any('Backend release preflight failed:' in arg for arg in call))
         harness = '''import sys, types
 def module(name):
@@ -488,7 +502,7 @@ sys.modules['alembic.script'].ScriptDirectory = types.SimpleNamespace(
                       ['0158_shop_alert_intents', 'other_branch'],
                       ['0148_unreviewed'], ['0158_shop_alert_intents'] * 2):
             with self.subTest(heads=heads):
-                result = subprocess.run(['python3', '-B', '-c', 'HEADS=' + repr(heads) + '\n' + harness + '\n' + code],
+                result = subprocess.run(['python3', '-B', '-c', 'HEADS=' + repr(heads) + '\n' + harness + '\n' + code, '0158_shop_alert_intents'],
                                         capture_output=True, text=True)
                 expected = heads == ['0158_shop_alert_intents']
                 self.assertEqual(result.returncode == 0, expected, result.stderr)
@@ -694,7 +708,7 @@ sys.modules['alembic.script'].ScriptDirectory = types.SimpleNamespace(
     def test_backend_admin_keeps_backup_migration_and_acceptance_gates_scoped(self):
         self.prepare_backend_admin()
         result = self.run_script('deploy.sh')
-        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.operations()
         self.assertEqual([c[c.index('pull'):] for c in calls if 'pull' in c],
                          [['pull', 'backend', 'booking-sms-reminders', 'migrate', 'admin-app']])
@@ -702,8 +716,8 @@ sys.modules['alembic.script'].ScriptDirectory = types.SimpleNamespace(
                          [['up', '-d', '--no-deps', 'backend', 'booking-sms-reminders', 'admin-app']])
         self.assertTrue(any(any('pg_dump' in arg for arg in c) for c in calls))
         self.assertTrue(any(c[-1] == 'migrate' for c in calls))
-        self.assertTrue((self.path / 'backend-recovery-required').exists())
-        self.assertEqual((self.path / 'current').resolve(), self.previous)
+        self.assertFalse((self.path / 'backend-recovery-required').exists())
+        self.assertEqual((self.path / 'current').resolve(), self.release_root)
 
     def test_backend_admin_rejects_unrelated_pins_config_and_missing_inputs_before_docker(self):
         for mutation in ('shop', 'backend-unchanged', 'compose', 'caddy', 'missing-pins'):
@@ -998,12 +1012,13 @@ sys.modules['alembic.script'].ScriptDirectory = types.SimpleNamespace(
         self.env['FAIL_PREFLIGHT'] = '1'
         self.assertNotEqual(self.run_script('deploy.sh').returncode, 0)
         call = next(call for call in self.operations() if any('Backend release preflight failed:' in arg for arg in call))
-        code = call[-1]
+        code = call[-2]
         self.assertIn('from app.core.config import Settings', code)
         self.assertIn('Settings()', code)
         self.assertIn('import app.services.master_mono', code)
         self.assertIn('import app.services.mono_checkbox_poll', code)
-        self.assertIn('["0158_shop_alert_intents"]', code)
+        self.assertIn('[sys.argv[1]]', code)
+        self.assertEqual(call[-1], '0158_shop_alert_intents')
         self.assertIn('import app.dependencies.shop_input', code)
         self.assertIn('import app.core.shop_request_size', code)
         for module in ('checkout_reminders', 'checkout_reminder_email', 'checkout_reminder_smtp'):
@@ -1020,7 +1035,7 @@ def guarded_import(name, *args, **kwargs):
     return original_import(name, *args, **kwargs)
 builtins.__import__ = guarded_import
 '''
-        result = subprocess.run(['python3', '-B', '-c', harness + '\n' + code], capture_output=True, text=True)
+        result = subprocess.run(['python3', '-B', '-c', harness + '\n' + code, '0158_shop_alert_intents'], capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('Backend release preflight failed:', result.stderr)
         self.assertNotIn('PRIVATE_SYNTHETIC_VALIDATION_INPUT', result.stdout + result.stderr)

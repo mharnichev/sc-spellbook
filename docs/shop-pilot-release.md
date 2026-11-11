@@ -94,9 +94,9 @@ After services start, HTTP health is followed by existing API owner log verifica
 and exactly one granted advisory key (1396919372,1) in the application DB. The CLI
 only reads locks; it does not start workers. Logs are filtered to sanitized owner
 state, scoped to the current container start. Missing/failed owner evidence fails.
-Changed-backend deployment exits **3** with the recovery marker retained: services are running but
-release acceptance is intentionally pending. CI should be read as pending/failed,
-not retried automatically. A normal rerun refuses the marker.
+The same deploy command verifies the paused pair, resumes dispatch with the
+recorded settings, and performs server-side acceptance. A normal rerun refuses
+a pending recovery marker.
 
 Unchanged-backend releases update only public-site/blog/admin/shop/Caddy with
 --no-deps, leaving API/reminders and backend configuration untouched. They run a
@@ -107,7 +107,11 @@ Backend config changes must not be smuggled through this frontend-only path.
 API, migration and reminder services explicitly share the same three HTTPS CORS
 origins, so CLI settings validation does not fall back to localhost defaults.
 Changed-backend preflight imports and instantiates actual Settings and required
-modules and verifies head 0129 inside the candidate before stopping writers.
+modules and verifies the schema pair declared in
+`scripts/master-mono-dispatch-cutover.py` before stopping writers. The cutover
+also records the candidate's effective settings for each writer. It requires
+the API checkout and pilot to be closed and live refunds to be off in both
+writers. It compares running settings against the candidate after recreation.
 Exceptions produce only a fixed sanitized failure, never raw validation inputs.
 This does not change the BE image or globally redact other Pydantic error paths.
 Rollback requires an explicit target, identical backend pin, no recovery marker,
@@ -116,14 +120,12 @@ services are recreated. Backend-changing rollback remains forbidden.
 
 ### Server-side acceptance
 
-Run the protected-data and paired backup checks for the exact release and
-complete the documented dispatch cutover resume. The resume command still
-requires the operator's paired-cutover attestation. Then run from that release
-directory:
-
-```sh
-EXPECTED_RELEASE="$PWD" bash scripts/accept-shop-pilot.sh
-```
+For a normal backend release, `scripts/deploy.sh` holds the database lease and
+host release lock through acceptance. The lease uses the host's installed
+`sc-recovery-5f4ba45-v2` package. Failure to obtain it aborts before writer
+shutdown. For an interrupted release, use the documented recovery procedure
+and then `EXPECTED_RELEASE="$PWD" bash scripts/accept-shop-pilot.sh` after
+the journal records a successful resume.
 
 Acceptance checks the recovery marker and journal, then verifies running image
 IDs, migration readiness, the API owner and the reminder process on the server.

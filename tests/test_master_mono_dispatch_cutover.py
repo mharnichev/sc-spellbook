@@ -83,21 +83,17 @@ class CutoverTests(unittest.TestCase):
             with self.subTest(altered=altered, logs=logs), self.assertRaises(RuntimeError):
                 MODULE.verify_shutdown({'State': {**info['State'], **altered}}, logs, events, api=True)
 
-    def test_release_flags_require_refunds_off_and_exact_checkout_transition(self):
+    def test_candidate_config_accepts_checkout_drift_and_refuses_enabled_refunds(self):
         checkout, pilot = MODULE.CHECKOUT_FLAGS
-        for writer, (before, after) in MODULE.CHECKOUT_TRANSITIONS.items():
-            with self.subTest(writer=writer):
-                original = {MODULE.FLAG: True, 'DEBUG': False, checkout: before[0], pilot: before[1]}
-                expected = MODULE.expected_release_flags(original, writer)
-                self.assertEqual(expected, {**original, checkout: after[0], pilot: after[1], MODULE.REFUND_FLAG: False})
-                for paused in (False, True):
-                    actual = {**expected, MODULE.FLAG: not paused}
-                    MODULE.verify_flags(expected, actual, paused=paused)
-                    for key in (MODULE.REFUND_FLAG, checkout, pilot, 'DEBUG'):
-                        with self.assertRaises(RuntimeError):
-                            MODULE.verify_flags(expected, {**actual, key: not actual[key]}, paused=paused)
-                    with self.assertRaises(RuntimeError):
-                        MODULE.verify_flags(expected, {k: v for k, v in actual.items() if k != MODULE.REFUND_FLAG}, paused=paused)
+        original = {MODULE.FLAG: True, 'DEBUG': False, checkout: True, pilot: False}
+        target = {**original, checkout: False, MODULE.REFUND_FLAG: False}
+        MODULE.verify_candidate_flags(original, target, 'backend')
+        for changed in ({checkout: True}, {pilot: True}, {MODULE.REFUND_FLAG: True},
+                        {'DEBUG': True}, {'NEW_FLAG': True}):
+            with self.subTest(changed=changed), self.assertRaises(RuntimeError):
+                MODULE.verify_candidate_flags(original, {**target, **changed}, 'backend')
+        with self.assertRaises(RuntimeError):
+            MODULE.verify_candidate_flags(original, original, 'backend')
 
     def test_paused_flags_allow_exactly_one_difference(self):
         original = {MODULE.FLAG: True, 'DEBUG': False, 'SHOP_CHECKOUT_ENABLED': False}
@@ -121,7 +117,7 @@ class CutoverTests(unittest.TestCase):
         with patch.dict(sys.modules, modules), patch.dict(os.environ, {MODULE.FLAG: 'true'}), \
              patch.object(Path, 'read_bytes', return_value=(MODULE.FLAG + '=false\0').encode()), \
              contextlib.redirect_stdout(output):
-            exec(MODULE.FLAGS_CODE, {})
+            exec(MODULE.FLAGS_CODE + MODULE.SETTINGS_FLAGS_CODE, {})
         self.assertEqual(json.loads(output.getvalue()), {MODULE.FLAG: False, 'DEBUG': False})
         self.assertNotIn('PRIVATE_SYNTHETIC_SECRET', output.getvalue())
 
@@ -135,6 +131,11 @@ class CutoverTests(unittest.TestCase):
                 MODULE.persist(target, {'phase': 'overwritten'}, exclusive=True)
             MODULE.persist(target, {'phase': 'paused'})
             self.assertEqual(json.loads(target.read_text())['phase'], 'paused')
+
+    def setUp(self):
+        source = patch.object(MODULE, 'SOURCE', 'previous_schema')
+        source.start()
+        self.addCleanup(source.stop)
 
     def runtime(self, directory):
         app = Path(directory); release = app / 'releases/new'
@@ -166,10 +167,15 @@ class CutoverTests(unittest.TestCase):
                                   'Health': {'Status': 'healthy'}}}
 
             def flags(self, info):
-                flags = {MODULE.FLAG: b'=true' in self.env.read_bytes(), 'DEBUG': False}
-                if self.target:
-                    flags[MODULE.REFUND_FLAG] = False
-                return flags
+                create = b'=true' in self.env.read_bytes()
+                if self.generation > 0 or self.target:
+                    return {**self.candidate_flags()['backend'], MODULE.FLAG: create}
+                return {MODULE.FLAG: create, 'DEBUG': False, MODULE.CHECKOUT_FLAGS[0]: True}
+
+            def candidate_flags(self):
+                flags = {MODULE.FLAG: True, 'DEBUG': False, MODULE.REFUND_FLAG: False,
+                         **dict.fromkeys(MODULE.CHECKOUT_FLAGS, False)}
+                return {name: flags.copy() for name in MODULE.WRITERS}
 
             def snapshot(self):
                 return dict(head=MODULE.HEAD if self.target else MODULE.SOURCE, watermark='private timestamp',

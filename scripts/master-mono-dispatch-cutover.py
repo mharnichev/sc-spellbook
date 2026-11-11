@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Private, fail-closed 0153/0158 -> 0158 dispatch fence. Never calls a provider."""
+"""Private, fail-closed dispatch fence. Never calls a provider."""
 import argparse
 import datetime
 import hashlib
@@ -14,17 +14,11 @@ import tempfile
 import time
 
 
-SOURCE = '0153_order_owner_archive'
+SOURCE = '0158_shop_alert_intents'
 HEAD = '0158_shop_alert_intents'
 FLAG = 'MASTER_MONO_INVOICE_CREATE_ENABLED'
 REFUND_FLAG = 'SHOP_MONO_CHECKBOX_REFUNDS_ENABLED'
 CHECKOUT_FLAGS = ('SHOP_CHECKOUT_ENABLED', 'SHOP_CHECKOUT_PILOT_ENABLED')
-# The live 0153 processes predate the current Compose/environment combination.
-# The API must use the tracked closed checkout configuration after recreation.
-CHECKOUT_TRANSITIONS = {
-    'backend': ((True, False), (False, False)),
-    'booking-sms-reminders': ((False, True), (True, False)),
-}
 WRITERS = ('backend', 'booking-sms-reminders')
 
 
@@ -113,12 +107,16 @@ def verify_flags(original, actual, paused):
 
 
 
-def expected_release_flags(original, writer):
+def verify_candidate_flags(original, candidate, writer):
+    require(candidate.get(REFUND_FLAG) is False, 'Candidate must disable live refunds')
+    if writer == 'backend':
+        require(all(candidate.get(flag) is False for flag in CHECKOUT_FLAGS),
+                'Candidate API must keep checkout and its pilot closed')
     expected = {**original, REFUND_FLAG: False}
-    before, after = CHECKOUT_TRANSITIONS[writer]
-    if tuple(original.get(flag) for flag in CHECKOUT_FLAGS) == before:
-        expected.update(zip(CHECKOUT_FLAGS, after, strict=True))
-    return expected
+    require(all(flag in candidate and candidate[flag] == value for flag, value in expected.items()
+                if flag not in CHECKOUT_FLAGS), 'Candidate changes existing writer flags')
+    require(all(value is False for flag, value in candidate.items() if flag not in expected
+                and flag not in CHECKOUT_FLAGS), 'New writer flags must default off')
 
 
 def verify_drain(before, after):
@@ -219,11 +217,13 @@ SELECT json_build_object(
 
 
 # Read only boolean Settings; none of the secret-valued configuration is emitted.
-FLAGS_CODE = """import json,os
+FLAGS_CODE = """import os
 from pathlib import Path
 for entry in Path('/proc/1/environ').read_bytes().split(b'\\0'):
  if b'=' in entry:
   k,v=entry.split(b'=',1);os.environ[k.decode()]=v.decode()
+"""
+SETTINGS_FLAGS_CODE = """import json
 from app.core.config import Settings
 s=Settings()
 print(json.dumps({k:v for k,v in s.model_dump(by_alias=True).items() if type(v) is bool}))
@@ -263,7 +263,16 @@ class Cutover:
         return info
 
     def flags(self, info):
-        return json.loads(self.run(['docker', 'exec', info['Id'], 'python', '-c', FLAGS_CODE]))
+        return json.loads(self.run(['docker', 'exec', info['Id'], 'python', '-c', FLAGS_CODE + SETTINGS_FLAGS_CODE]))
+
+    def candidate_flags(self):
+        services = json.loads(self.run(self.compose + ['config', '--format', 'json']))['services']
+        # The running backend owns a static ingress address. Probe settings offline.
+        code = 'import json, os, sys\nos.environ.update(json.load(sys.stdin))\n' + SETTINGS_FLAGS_CODE
+        command = ['docker', 'run', '--rm', '-i', '--pull=never', '--network', 'none',
+                   '--entrypoint', 'python', self.backend_pin, '-c', code]
+        return {name: json.loads(self.run(command, json.dumps(services[name]['environment']).encode()))
+                for name in WRITERS}
 
     def snapshot(self):
         pid = os.environ.get('CUTOVER_LEASE_PID', '')
@@ -308,27 +317,37 @@ class Cutover:
                 'Private config checkpoint changed')
         return original
 
+    def verify_no_other_recovery(self):
+        for name in ('master-qr-activation-required', 'english-backfill-required',
+                     'shop-online-activation-required'):
+            require(not os.path.lexists(self.app / name), 'Another recovery must finish before release')
+
     def prepare(self):
-        self.marker_matches()
-        self.directory.mkdir(mode=0o700)
-        sync_directory(self.directory.parent)
+        self.verify_no_other_recovery()
+        if os.path.lexists(self.directory):
+            raise FileExistsError('Cutover journal directory already exists')
         original = private_bytes(self.env)
         paused = paused_env(original)
-        atomic_bytes(self.directory / 'original.env', original)
         writers = {name: self.service(name) for name in WRITERS}
         flags = {name: self.flags(info) for name, info in writers.items()}
+        target_flags = self.candidate_flags()
+        for name in WRITERS:
+            verify_candidate_flags(flags[name], target_flags[name], name)
         require(all(info['State']['Running'] for info in writers.values()), 'Old writers must be running at capture')
         baseline = self.snapshot()
         verify_drain(baseline, {**baseline, 'sessions': 0})
         state = dict(release=str(self.release), previous=str((self.app / 'current').resolve(strict=True)),
                      pins_hash=digest((self.release / 'versions/production.env').read_bytes()),
-                     original_hash=digest(original), paused_hash=digest(paused), flags=flags,
+                     original_hash=digest(original), paused_hash=digest(paused), target_flags=target_flags,
                      writers={name: {'id': info['Id'], 'started': info['State']['StartedAt']} for name, info in writers.items()},
                      baseline=baseline, phase='prepared', captured=int(time.time()))
         for name in WRITERS:
             verify_flags(flags[name], flags[name], paused=False)
             value = re.search(rb'(?im)^[ \t]*(?:export[ \t]+)?' + FLAG.encode() + rb'[ \t]*=[ \t]*(true|false|1|0)', original)[1]
             require(flags[name][FLAG] == (value.lower() in (b'true', b'1')), 'Original file and old process create flag differ')
+        self.directory.mkdir(mode=0o700)
+        sync_directory(self.directory.parent)
+        atomic_bytes(self.directory / 'original.env', original)
         persist(self.journal, state, exclusive=True)
 
     def pause(self, reconcile=False):
@@ -365,10 +384,10 @@ class Cutover:
             require(info['Id'] != previous_ids[name] and info['State']['Running']
                     and (name != 'backend' or (info['State'].get('Health') or {}).get('Status') == 'healthy'),
                     'New healthy writer identity required')
-            verify_flags(expected_release_flags(state['flags'][name], name), self.flags(info), paused)
+            verify_flags(state['target_flags'][name], self.flags(info), paused)
             ids[name] = info['Id']
         after = self.snapshot()
-        require(after['head'] == HEAD, 'Exact target 0158 required')
+        require(after['head'] == HEAD, 'Exact target schema required')
         for key in ('requests', 'unresolved', 'protected', 'compatibility', 'closures', 'closure_orders', 'conflicts'):
             require(after[key] == state['baseline'][key], 'Protected dispatch history changed: ' + key)
         return ids
@@ -396,12 +415,16 @@ class Cutover:
             data = private_bytes(path)
             require(len(data) == expected['bytes'] > 0 and digest(data) == expected['sha256'], 'Backup checksum differs')
 
-    def resume(self):
+    def resume_under_lock(self):
+        self.resume(server_verified=True)
+
+    def resume(self, *, server_verified=False):
         # current=new is admitted only after the explicit journaled acceptance transition.
         state = self.load(allow_accepted_current=True)
         require(state['phase'] == 'paused_verified', 'Resume requires a verified paused pair; inspect instead of repeat')
-        require(os.environ.get('PILOT_MANUAL_GATE') == 'verified' and os.environ.get('EXPECTED_RELEASE') == str(self.release),
-                'Exact release manual paired pre-resume gates required')
+        if not server_verified:
+            require(os.environ.get('PILOT_MANUAL_GATE') == 'verified' and os.environ.get('EXPECTED_RELEASE') == str(self.release),
+                    'Exact release recovery gate required')
         ids = self.verify_live(state, True, {name: state['writers'][name]['id'] for name in WRITERS})
         require(ids == state['paused_ids'], 'Paused writers changed since verification')
         self.verify_backup()
@@ -459,7 +482,7 @@ class Cutover:
         baseline_head = state['baseline']['head']
         require(baseline_head in (SOURCE, HEAD) and head in (SOURCE, HEAD)
                 and (baseline_head != HEAD or head == HEAD), 'Unknown or regressed schema; no recovery action performed')
-        if head == SOURCE or (baseline_head == HEAD and state['phase'] in ('prepared', 'pause_intent')):
+        if head != HEAD or (baseline_head == HEAD and state['phase'] in ('prepared', 'pause_intent')):
             require(state['phase'] in ('prepared', 'pause_intent', 'paused'), 'Unexpected source-schema recovery phase')
             self.run(self.compose + ['stop', '--timeout', '90', *WRITERS])
             self.pause(reconcile=True)
@@ -483,6 +506,7 @@ class Cutover:
             raise
 
     def accepted(self):
+        self.verify_no_other_recovery()
         state = self.load(allow_accepted_current=True)
         require(state['phase'] in ('resumed', 'accepting', 'accepted'), 'Acceptance requires verified resumed cutover')
         ids = self.verify_live(state, False, {name: state['writers'][name]['id'] for name in WRITERS})
@@ -502,9 +526,14 @@ class Cutover:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=('verify-lease', 'prepare', 'pause', 'paused', 'resume', 'accepted', 'switched', 'inspect', 'recover-paused', 'refence'))
-    parser.add_argument('--release', type=Path, required=True)
+    parser.add_argument('mode', choices=('schema-pair', 'verify-lease', 'prepare', 'pause', 'paused', 'resume', 'resume-under-lock', 'accepted', 'switched', 'inspect', 'recover-paused', 'refence'))
+    parser.add_argument('--release', type=Path)
     args = parser.parse_args()
+    if args.mode == 'schema-pair':
+        print(SOURCE, HEAD)
+        return
+    if args.release is None:
+        parser.error('--release is required')
     install_signal_handlers()
     os.umask(0o077)
     job = Cutover(args.release, Path(os.environ.get('APP_DIR', '/opt/soulcuts')))

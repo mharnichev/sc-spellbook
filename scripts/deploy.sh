@@ -9,6 +9,8 @@ RECOVERY_MARKER="${APP_DIR}/backend-recovery-required"
 COMPOSE_FILE="${ROOT_DIR}/docker-compose.prod.yml"
 ENV_FILE="${ROOT_DIR}/versions/production.env"
 WRITERS_STOPPING=false
+PAUSED_VERIFIED=false
+CUTOVER="${ROOT_DIR}/scripts/master-mono-dispatch-cutover.py"
 compose() {
   docker compose --project-name "${PROJECT_NAME}" --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" "$@"
 }
@@ -26,6 +28,35 @@ source "${ROOT_DIR}/scripts/release-lock.sh"
 acquire_release_lock
 [[ -L "${CURRENT_LINK}" ]] || { echo 'An existing current release is required; bootstrap is a separate procedure.' >&2; exit 1; }
 PREVIOUS_RELEASE="$(readlink -f "${CURRENT_LINK}")"
+lease_pid=""
+lease_log=""
+cleanup() {
+  if [[ -n "${lease_pid}" ]]; then
+    kill -TERM "${lease_pid}" 2>/dev/null || true
+    wait "${lease_pid}" 2>/dev/null || true
+  fi
+  if [[ -n "${lease_log}" ]]; then rm -f "${lease_log}"; fi
+  rm -f "${RELEASE_LOCK}/pid"
+  rmdir "${RELEASE_LOCK}"
+}
+trap cleanup EXIT
+start_cutover_lease() {
+  local line="" attempt
+  lease_log="$(mktemp "${APP_DIR}/.release-lease-XXXXXXXX")"
+  python3 -I -B "${ROOT_DIR}/scripts/hold-release-lease.py" "${ROOT_DIR}" > "${lease_log}" 2>&1 &
+  lease_pid=$!
+  for ((attempt=0; attempt<30; attempt++)); do
+    IFS= read -r line < "${lease_log}" || true
+    if [[ "$line" =~ ^CUTOVER_LEASE_PID=([1-9][0-9]*)[[:space:]]CUTOVER_LEASE_START_US=([1-9][0-9]{14,17})$ ]]; then
+      export CUTOVER_LEASE_PID="${BASH_REMATCH[1]}" CUTOVER_LEASE_START_US="${BASH_REMATCH[2]}"
+      return
+    fi
+    kill -0 "${lease_pid}" 2>/dev/null || break
+    sleep 1
+  done
+  echo 'Could not acquire the paired database lease; no writers stopped.' >&2
+  return 1
+}
 previous_backend="$(python3 "${ROOT_DIR}/scripts/release-backend-pin.py" "${PREVIOUS_RELEASE}/versions/production.env")"
 next_backend="$(python3 "${ROOT_DIR}/scripts/release-backend-pin.py" "${ENV_FILE}")"
 BACKEND_CHANGED=false
@@ -65,16 +96,21 @@ if [[ -f "${ROOT_DIR}/versions/deploy.scope" ]]; then
   export ADMIN_APP_IMAGE="${admin_only_image}"
 fi
 failed() {
-  local status=$?
+  local status="${1:-$?}"
   trap - ERR
+  trap '' INT TERM HUP
   if [[ "${WRITERS_STOPPING}" == true ]]; then
     echo 'Deployment failed. Refusing automatic image rollback; database writers remain stopped.' >&2
+    if [[ "${PAUSED_VERIFIED}" == true ]]; then
+      python3 "${CUTOVER}" refence --release "${ROOT_DIR}" || true
+    fi
     compose stop --timeout 90 backend booking-sms-reminders || true
     echo "Recovery marker retained: ${RECOVERY_MARKER}" >&2
   fi
   exit "${status}"
 }
 trap failed ERR
+trap 'failed 130' INT TERM HUP
 if [[ -e "${RECOVERY_MARKER}" ]]; then
   echo 'Backend recovery is required; reconcile schema, queues and release before clearing the marker.' >&2
   exit 1
@@ -98,9 +134,13 @@ else
   compose --profile release pull
 fi
 preflight_sentry_store
+schema_pair="$(python3 "${CUTOVER}" schema-pair)"
+read -r source_schema target_schema <<< "${schema_pair}"
+[[ "${source_schema}" =~ ^[a-z0-9_]+$ && "${target_schema}" =~ ^[a-z0-9_]+$ ]]
 # Reject the still-pinned old backend before touching running writers.
 compose --profile release run --rm --no-deps --entrypoint python migrate -c \
   'try:
+    import sys
     from app.core.config import Settings
     Settings()
     import app.core.proxy_trust
@@ -119,32 +159,33 @@ compose --profile release run --rm --no-deps --entrypoint python migrate -c \
     import app.services.checkout_reminder_smtp
     from alembic.config import Config
     from alembic.script import ScriptDirectory
-    if ScriptDirectory.from_config(Config("alembic.ini")).get_heads() != ["0158_shop_alert_intents"]:
+    if ScriptDirectory.from_config(Config("alembic.ini")).get_heads() != [sys.argv[1]]:
         raise RuntimeError("Unexpected migration head")
 except Exception:
-    raise SystemExit("Backend release preflight failed: settings, modules or schema contract unavailable") from None'
-source_is_0153="$(compose exec -T postgres sh -ec '
+    raise SystemExit("Backend release preflight failed: settings, modules or schema contract unavailable") from None' "${target_schema}"
+source_matches="$(compose exec -T postgres sh -ec '
   export PGOPTIONS="-c default_transaction_read_only=on -c statement_timeout=5000 -c lock_timeout=1000"
   exec psql -XqAt -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "$1"
-' _ "SELECT count(*) = 1 AND count(*) FILTER (WHERE version_num = '0153_order_owner_archive') = 1 FROM public.alembic_version")"
-[[ "${source_is_0153}" == t ]] || {
-  echo 'Fresh 0158 deployment requires the exact live 0153 schema; no writers stopped.' >&2
+' _ "SELECT count(*) = 1 AND count(*) FILTER (WHERE version_num = '${source_schema}') = 1 FROM public.alembic_version")"
+[[ "${source_matches}" == t ]] || {
+  echo "Expected live schema ${source_schema}; no writers stopped." >&2
   exit 1
 }
-python3 "${ROOT_DIR}/scripts/master-mono-dispatch-cutover.py" verify-lease --release "${ROOT_DIR}"
+start_cutover_lease
+python3 "${CUTOVER}" verify-lease --release "${ROOT_DIR}"
 mkdir -p "${APP_DIR}/backups" "${APP_DIR}/releases"
 BACKUP_DIR="$(mktemp -d "${APP_DIR}/backups/pilot-XXXXXXXX")"
 export BACKUP_DIR
+python3 "${CUTOVER}" prepare --release "${ROOT_DIR}"
 printf 'release=%s\nbackup=%s\n' "${ROOT_DIR}" "${BACKUP_DIR}" > "${RECOVERY_MARKER}"
 WRITERS_STOPPING=true
-python3 "${ROOT_DIR}/scripts/master-mono-dispatch-cutover.py" prepare --release "${ROOT_DIR}"
 compose stop --timeout 90 booking-sms-reminders backend
 remaining="$(compose ps --status running --services)"
 if printf '%s\n' "${remaining}" | grep -Eq '^(backend|booking-sms-reminders)$'; then
   echo 'Database writers did not stop' >&2
   false
 fi
-python3 "${ROOT_DIR}/scripts/master-mono-dispatch-cutover.py" pause --release "${ROOT_DIR}"
+python3 "${CUTOVER}" pause --release "${ROOT_DIR}"
 bash "${ROOT_DIR}/scripts/backup-db.sh"
 bash "${ROOT_DIR}/scripts/backup-files.sh"
 python3 "${ROOT_DIR}/scripts/backup-manifest.py" "${BACKUP_DIR}"
@@ -211,11 +252,14 @@ if [[ "${BACKEND_CHANGED}" == false ]]; then
   echo "Frontend-only deployment completed: ${ROOT_DIR}; backend and writers unchanged."
   exit 0
 fi
-bash "${ROOT_DIR}/scripts/verify-background-owner.sh"
-python3 "${ROOT_DIR}/scripts/verify-deployed-images.py"
 printf 'phase=pending_acceptance\n' >> "${RECOVERY_MARKER}"
-python3 "${ROOT_DIR}/scripts/master-mono-dispatch-cutover.py" paused --release "${ROOT_DIR}"
-trap - ERR
-echo "Services started, NOT ACCEPTED: ${ROOT_DIR}. Recovery marker retained."
-echo 'Dispatch remains disabled. Complete the paired cutover resume for this release, then run accept-shop-pilot.sh for server-side acceptance.'
-exit 3
+python3 "${CUTOVER}" paused --release "${ROOT_DIR}"
+PAUSED_VERIFIED=true
+python3 "${CUTOVER}" resume-under-lock --release "${ROOT_DIR}"
+bash "${ROOT_DIR}/scripts/verify-release-runtime.sh" "${ROOT_DIR}"
+python3 "${CUTOVER}" accepted --release "${ROOT_DIR}"
+ln -sfn "${ROOT_DIR}" "${CURRENT_LINK}"
+python3 "${CUTOVER}" switched --release "${ROOT_DIR}"
+rm "${RECOVERY_MARKER}"
+WRITERS_STOPPING=false
+echo "Backend deployment accepted on the server: ${ROOT_DIR}."
