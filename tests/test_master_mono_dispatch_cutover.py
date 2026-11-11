@@ -83,6 +83,22 @@ class CutoverTests(unittest.TestCase):
             with self.subTest(altered=altered, logs=logs), self.assertRaises(RuntimeError):
                 MODULE.verify_shutdown({'State': {**info['State'], **altered}}, logs, events, api=True)
 
+    def test_release_flags_require_refunds_off_and_exact_checkout_transition(self):
+        checkout, pilot = MODULE.CHECKOUT_FLAGS
+        for writer, (before, after) in MODULE.CHECKOUT_TRANSITIONS.items():
+            with self.subTest(writer=writer):
+                original = {MODULE.FLAG: True, 'DEBUG': False, checkout: before[0], pilot: before[1]}
+                expected = MODULE.expected_release_flags(original, writer)
+                self.assertEqual(expected, {**original, checkout: after[0], pilot: after[1], MODULE.REFUND_FLAG: False})
+                for paused in (False, True):
+                    actual = {**expected, MODULE.FLAG: not paused}
+                    MODULE.verify_flags(expected, actual, paused=paused)
+                    for key in (MODULE.REFUND_FLAG, checkout, pilot, 'DEBUG'):
+                        with self.assertRaises(RuntimeError):
+                            MODULE.verify_flags(expected, {**actual, key: not actual[key]}, paused=paused)
+                    with self.assertRaises(RuntimeError):
+                        MODULE.verify_flags(expected, {k: v for k, v in actual.items() if k != MODULE.REFUND_FLAG}, paused=paused)
+
     def test_paused_flags_allow_exactly_one_difference(self):
         original = {MODULE.FLAG: True, 'DEBUG': False, 'SHOP_CHECKOUT_ENABLED': False}
         MODULE.verify_flags(original, {**original, MODULE.FLAG: False}, paused=True)
@@ -150,7 +166,10 @@ class CutoverTests(unittest.TestCase):
                                   'Health': {'Status': 'healthy'}}}
 
             def flags(self, info):
-                return {MODULE.FLAG: b'=true' in self.env.read_bytes(), 'DEBUG': False}
+                flags = {MODULE.FLAG: b'=true' in self.env.read_bytes(), 'DEBUG': False}
+                if self.target:
+                    flags[MODULE.REFUND_FLAG] = False
+                return flags
 
             def snapshot(self):
                 return dict(head=MODULE.HEAD if self.target else MODULE.SOURCE, watermark='private timestamp',

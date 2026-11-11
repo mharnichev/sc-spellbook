@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Private, fail-closed 0152/0153 -> 0153 dispatch fence. Never calls a provider."""
+"""Private, fail-closed 0153/0158 -> 0158 dispatch fence. Never calls a provider."""
 import argparse
 import datetime
 import hashlib
@@ -14,9 +14,17 @@ import tempfile
 import time
 
 
-SOURCE = '0152_shop_online_admin_cancel'
-HEAD = '0153_order_owner_archive'
+SOURCE = '0153_order_owner_archive'
+HEAD = '0158_shop_alert_intents'
 FLAG = 'MASTER_MONO_INVOICE_CREATE_ENABLED'
+REFUND_FLAG = 'SHOP_MONO_CHECKBOX_REFUNDS_ENABLED'
+CHECKOUT_FLAGS = ('SHOP_CHECKOUT_ENABLED', 'SHOP_CHECKOUT_PILOT_ENABLED')
+# The live 0153 processes predate the current Compose/environment combination.
+# The API must use the tracked closed checkout configuration after recreation.
+CHECKOUT_TRANSITIONS = {
+    'backend': ((True, False), (False, False)),
+    'booking-sms-reminders': ((False, True), (True, False)),
+}
 WRITERS = ('backend', 'booking-sms-reminders')
 
 
@@ -102,6 +110,15 @@ def verify_flags(original, actual, paused):
     require(FLAG in original and type(original[FLAG]) is bool, 'Effective create flag missing')
     expected = {**original, FLAG: False} if paused else original
     require(actual == expected, 'Effective flags differ from the exact reviewed phase')
+
+
+
+def expected_release_flags(original, writer):
+    expected = {**original, REFUND_FLAG: False}
+    before, after = CHECKOUT_TRANSITIONS[writer]
+    if tuple(original.get(flag) for flag in CHECKOUT_FLAGS) == before:
+        expected.update(zip(CHECKOUT_FLAGS, after, strict=True))
+    return expected
 
 
 def verify_drain(before, after):
@@ -348,10 +365,10 @@ class Cutover:
             require(info['Id'] != previous_ids[name] and info['State']['Running']
                     and (name != 'backend' or (info['State'].get('Health') or {}).get('Status') == 'healthy'),
                     'New healthy writer identity required')
-            verify_flags(state['flags'][name], self.flags(info), paused)
+            verify_flags(expected_release_flags(state['flags'][name], name), self.flags(info), paused)
             ids[name] = info['Id']
         after = self.snapshot()
-        require(after['head'] == HEAD, 'Exact target 0153 required')
+        require(after['head'] == HEAD, 'Exact target 0158 required')
         for key in ('requests', 'unresolved', 'protected', 'compatibility', 'closures', 'closure_orders', 'conflicts'):
             require(after[key] == state['baseline'][key], 'Protected dispatch history changed: ' + key)
         return ids
