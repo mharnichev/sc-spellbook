@@ -22,6 +22,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Use pinned Python test runtime
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Validate backup and deployment safeguards
         run: |
           for script in scripts/deploy.sh scripts/restore-db.sh scripts/backup-db.sh scripts/backup-files.sh scripts/release-lock.sh scripts/verify-background-owner.sh scripts/accept-shop-pilot.sh scripts/rollback.sh scripts/run-english-backfill.sh scripts/run-shop-online-activation.sh scripts/run-shop-online-compose-recovery.sh scripts/run-shop-content-backfill.sh; do
@@ -32,6 +37,30 @@ jobs:
 
       - name: Validate Docker Compose
         run: docker compose --env-file versions/production.env -f docker-compose.prod.yml config -q
+
+      - name: Validate isolated monitoring
+        run: |
+          docker compose --env-file monitoring/images.env -f monitoring/compose.yml config -q
+          set -a
+          . monitoring/images.env
+          set +a
+          docker pull "$PROMETHEUS_IMAGE"
+          docker pull "$LOKI_IMAGE"
+          docker pull "$ALLOY_IMAGE"
+          docker run --rm --network none --read-only --tmpfs /tmp:rw,size=16m \
+            -v "$PWD/monitoring:/etc/prometheus:ro" --entrypoint /bin/promtool \
+            "$PROMETHEUS_IMAGE" check config /etc/prometheus/prometheus.yml
+          docker run --rm --network none --read-only --tmpfs /tmp:rw,size=16m --tmpfs /loki:rw,size=16m \
+            -v "$PWD/monitoring/loki.yml:/etc/loki/loki.yml:ro" \
+            "$LOKI_IMAGE" -config.file=/etc/loki/loki.yml -verify-config=true
+          docker run --rm --network none --read-only --tmpfs /tmp:rw,size=16m \
+            -v "$PWD/monitoring/config.alloy:/etc/alloy/config.alloy:ro" \
+            "$ALLOY_IMAGE" validate /etc/alloy/config.alloy
+
+      - name: Verify actual monitoring stack with persistent test volumes
+        run: |
+          docker compose --env-file monitoring/images.env -f monitoring/compose.yml pull
+          python3 -B monitoring/integration.py
 
       - name: Validate Caddyfile
         run: |

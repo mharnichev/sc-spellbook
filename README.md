@@ -2,10 +2,8 @@
 
 Production infrastructure for the Soulcuts project on a single Hetzner VPS.
 
-Closed Shop pilot changes are **not deploy-approved**. Follow
-[the pilot release/acceptance runbook](docs/shop-pilot-release.md): required Shop
-image pin is intentionally absent, migrations are isolated, and successful startup
-leaves a manual acceptance marker. No public checkout is enabled.
+The [Shop release runbook](docs/shop-pilot-release.md) describes server-side
+acceptance and recovery for the closed Shop pilot.
 
 This repo intentionally keeps the first deployment stage simple:
 
@@ -308,6 +306,13 @@ Open a PR and merge it into `main`.
 
 ## Rollback
 
+An `admin-app` value in `versions/deploy.scope` requires a backoffice-only
+deployment: only its image pin may change, shared Compose/Caddy bytes must match,
+and all usual acceptance gates still apply. No other service is pulled or
+recreated. Remove this release intent explicitly when preparing a broader
+release. Caddy can retain a mount from the previous identical release; do not
+delete a release directory still mounted by a running container.
+
 SSH to the server:
 
 ```bash
@@ -349,9 +354,9 @@ to retry a failed deployment.
 If backend replacement fails, deployment leaves these writers stopped rather
 than automatically starting an older backend against a potentially newer schema.
 Inspect the database version and recovery options before restarting services.
-For backend changes, after healthy startup and owner checks, deploy exits 3 with writers running and
-the marker retained for primary manual acceptance; do not automatically retry.
-Only `accept-shop-pilot.sh` clears that marker after the documented explicit gate.
+After backend startup, the same deploy command verifies and resumes the writer
+pair, checks the release on the server, then updates `current` and clears the
+marker. Use the recovery runbook if it fails.
 
 Backup:
 

@@ -1,0 +1,41 @@
+logging {
+  level = "warn"
+}
+
+loki.source.file "services" {
+  targets = [
+    {"__path__" = "/spool/logs/backend.log", "service" = "backend", "job" = "soulcuts"},
+    {"__path__" = "/spool/logs/booking-sms-reminders.log", "service" = "booking-sms-reminders", "job" = "soulcuts"},
+    {"__path__" = "/spool/logs/public-site.log", "service" = "public-site", "job" = "soulcuts"},
+    {"__path__" = "/spool/logs/admin-app.log", "service" = "admin-app", "job" = "soulcuts"},
+    {"__path__" = "/spool/logs/shop.log", "service" = "shop", "job" = "soulcuts"},
+    {"__path__" = "/spool/logs/blog.log", "service" = "blog", "job" = "soulcuts"},
+    {"__path__" = "/spool/logs/caddy.log", "service" = "caddy", "job" = "soulcuts"},
+    {"__path__" = "/spool/logs/postgres.log", "service" = "postgres", "job" = "soulcuts"},
+  ]
+  forward_to = [loki.process.services.receiver]
+}
+
+loki.process "services" {
+  stage.json {
+    expressions = {"level" = "level", "timestamp" = "timestamp"}
+    drop_malformed = true
+  }
+  stage.labels {
+    values = {"level" = ""}
+  }
+  stage.timestamp {
+    source = "timestamp"
+    format = "RFC3339Nano"
+  }
+  stage.label_keep {
+    values = ["service", "job", "level"]
+  }
+  forward_to = [loki.write.local.receiver]
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

@@ -1,0 +1,48 @@
+name: Deploy monitoring
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+jobs:
+  monitoring:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Verify monitoring configuration
+        run: |
+          python3 -B -m unittest discover -s tests -p 'test_monitoring*.py' -v
+          docker compose --env-file monitoring/images.env -f monitoring/compose.yml config -q
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.PRODUCTION_KNOWN_HOSTS }}
+        run: |
+          install -m 0700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 0600 ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 0644 ~/.ssh/known_hosts
+      - name: Upload immutable monitoring release
+        env:
+          HOST: ${{ secrets.PRODUCTION_HOST }}
+          PORT: ${{ secrets.PRODUCTION_PORT }}
+          USER: ${{ secrets.PRODUCTION_USER }}
+        run: |
+          target="/opt/soulcuts/monitoring/releases/$GITHUB_SHA"
+          ssh -p "${PORT:-22}" "$USER@$HOST" "umask 077; test ! -e '$target' && mkdir -p '$target'"
+          rsync -az -e "ssh -p ${PORT:-22}" monitoring/ "$USER@$HOST:$target/monitoring/"
+      - name: Install and accept isolated monitoring
+        env:
+          HOST: ${{ secrets.PRODUCTION_HOST }}
+          PORT: ${{ secrets.PRODUCTION_PORT }}
+          USER: ${{ secrets.PRODUCTION_USER }}
+        run: |
+          ssh -p "${PORT:-22}" "$USER@$HOST" \
+            "python3 -I /opt/soulcuts/monitoring/releases/$GITHUB_SHA/monitoring/deploy.py --revision $GITHUB_SHA"

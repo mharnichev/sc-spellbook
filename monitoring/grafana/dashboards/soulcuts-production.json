@@ -1,0 +1,147 @@
+{
+  "id": null,
+  "uid": "soulcuts-production",
+  "title": "Soulcuts Production",
+  "description": "Host and container operations from a restricted collector, scrape health and sanitized service events. No application tracing. Access only through the local SSH loopback tunnel; access controls are configured outside this dashboard.",
+  "tags": ["soulcuts", "operations"],
+  "timezone": "Europe/Kyiv",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "graphTooltip": 1,
+  "refresh": "30s",
+  "time": {"from": "now-1h", "to": "now"},
+  "timepicker": {"refresh_intervals": ["30s", "1m", "5m"]},
+  "links": [],
+  "annotations": {"list": []},
+  "templating": {
+    "list": [
+      {
+        "name": "service",
+        "label": "Service",
+        "type": "custom",
+        "query": "backend,booking-sms-reminders,public-site,admin-app,shop,blog,caddy,postgres",
+        "multi": true,
+        "includeAll": true,
+        "allValue": "backend|booking-sms-reminders|public-site|admin-app|shop|blog|caddy|postgres",
+        "current": {"selected": true, "text": ["All"], "value": ["$__all"]},
+        "options": [
+          {"selected": true, "text": "All", "value": "$__all"},
+          {"selected": false, "text": "backend", "value": "backend"},
+          {"selected": false, "text": "booking-sms-reminders", "value": "booking-sms-reminders"},
+          {"selected": false, "text": "public-site", "value": "public-site"},
+          {"selected": false, "text": "admin-app", "value": "admin-app"},
+          {"selected": false, "text": "shop", "value": "shop"},
+          {"selected": false, "text": "blog", "value": "blog"},
+          {"selected": false, "text": "caddy", "value": "caddy"},
+          {"selected": false, "text": "postgres", "value": "postgres"}
+        ],
+        "skipUrlSync": true,
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1, "title": "Host CPU busy", "type": "stat",
+      "description": "Host busy CPU ratio across all logical CPUs, shown as 0-100%. This is not container CPU percent.",
+      "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
+      "datasource": {"type": "prometheus", "uid": "soulcuts-prometheus"},
+      "targets": [{"refId": "A", "expr": "soulcuts_host_cpu_busy_ratio", "instant": true}],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1, "noValue": "No data", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 0.8}, {"color": "red", "value": 0.95}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "values": false}, "colorMode": "value", "graphMode": "none"}
+    },
+    {
+      "id": 2, "title": "Host RAM used", "type": "stat",
+      "description": "Used RAM fraction: 1 minus available bytes / total bytes; available includes reclaimable memory.",
+      "gridPos": {"x": 6, "y": 0, "w": 6, "h": 4},
+      "datasource": {"type": "prometheus", "uid": "soulcuts-prometheus"},
+      "targets": [{"refId": "A", "expr": "1 - soulcuts_host_memory_available_bytes / soulcuts_host_memory_total_bytes", "instant": true}],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1, "noValue": "No data"}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "values": false}, "colorMode": "value", "graphMode": "none"}
+    },
+    {
+      "id": 3, "title": "Host disk used", "type": "stat",
+      "description": "Used disk fraction for the collector's monitored filesystem: 1 minus free bytes / size bytes.",
+      "gridPos": {"x": 12, "y": 0, "w": 6, "h": 4},
+      "datasource": {"type": "prometheus", "uid": "soulcuts-prometheus"},
+      "targets": [{"refId": "A", "expr": "1 - soulcuts_host_disk_free_bytes / soulcuts_host_disk_size_bytes", "instant": true}],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1, "noValue": "No data", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 0.8}, {"color": "red", "value": 0.9}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "values": false}, "colorMode": "value", "graphMode": "none"}
+    },
+    {
+      "id": 4, "title": "Collector age", "type": "stat",
+      "description": "Seconds since the last successful collection. Missing data is unknown, never success. Correlate with collector success and scrape health before trusting cached host values.",
+      "gridPos": {"x": 18, "y": 0, "w": 6, "h": 4},
+      "datasource": {"type": "prometheus", "uid": "soulcuts-prometheus"},
+      "targets": [{"refId": "A", "expr": "time() - soulcuts_collector_last_success_unixtime", "instant": true}],
+      "fieldConfig": {"defaults": {"unit": "s", "min": 0, "noValue": "No data", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 90}, {"color": "red", "value": 180}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "values": false}, "colorMode": "value", "graphMode": "none"}
+    },
+    {
+      "id": 5, "title": "Service running", "type": "stat",
+      "description": "Selected fixed production services: 1 running, 0 stopped. Missing series means unknown; it is not an application availability probe.",
+      "gridPos": {"x": 0, "y": 4, "w": 12, "h": 5},
+      "datasource": {"type": "prometheus", "uid": "soulcuts-prometheus"},
+      "targets": [{"refId": "A", "expr": "soulcuts_service_running{service=~\"${service:regex}\"}", "legendFormat": "{{service}}", "instant": true}],
+      "fieldConfig": {"defaults": {"unit": "none", "noValue": "Unknown", "mappings": [{"type": "value", "options": {"0": {"text": "Stopped", "color": "red"}, "1": {"text": "Running", "color": "green"}}}]}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "values": false}, "textMode": "value_and_name", "colorMode": "value", "graphMode": "none"}
+    },
+    {
+      "id": 6, "title": "Service health", "type": "stat",
+      "description": "Container health from the collector: 1 healthy, 0 unhealthy, negative or missing unknown/not configured. This is not end-to-end application tracing or request health.",
+      "gridPos": {"x": 12, "y": 4, "w": 12, "h": 5},
+      "datasource": {"type": "prometheus", "uid": "soulcuts-prometheus"},
+      "targets": [{"refId": "A", "expr": "soulcuts_service_healthy{service=~\"${service:regex}\"}", "legendFormat": "{{service}}", "instant": true}],
+      "fieldConfig": {"defaults": {"unit": "none", "noValue": "Unknown", "mappings": [{"type": "value", "options": {"-1": {"text": "Unknown", "color": "gray"}, "0": {"text": "Unhealthy", "color": "red"}, "1": {"text": "Healthy", "color": "green"}}}]}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "values": false}, "textMode": "value_and_name", "colorMode": "value", "graphMode": "none"}
+    },
+    {
+      "id": 7, "title": "Collector success", "type": "stat",
+      "description": "Latest collection result: 1 successful, 0 failed. Check collector age separately; a reachable scrape target can still serve stale collector data.",
+      "gridPos": {"x": 0, "y": 9, "w": 6, "h": 4},
+      "datasource": {"type": "prometheus", "uid": "soulcuts-prometheus"},
+      "targets": [{"refId": "A", "expr": "soulcuts_collector_success", "instant": true}],
+      "fieldConfig": {"defaults": {"noValue": "Unknown", "mappings": [{"type": "value", "options": {"0": {"text": "Failed", "color": "red"}, "1": {"text": "Success", "color": "green"}}}]}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "values": false}, "colorMode": "value", "graphMode": "none"}
+    },
+    {
+      "id": 8, "title": "Scrape targets", "type": "stat",
+      "description": "Prometheus scrape result by configured job and instance: 1 reachable, 0 failed. Missing targets remain unknown. Does not imply application health.",
+      "gridPos": {"x": 6, "y": 9, "w": 18, "h": 4},
+      "datasource": {"type": "prometheus", "uid": "soulcuts-prometheus"},
+      "targets": [{"refId": "A", "expr": "up", "legendFormat": "{{job}} / {{instance}}", "instant": true}],
+      "fieldConfig": {"defaults": {"noValue": "Unknown", "mappings": [{"type": "value", "options": {"0": {"text": "Down", "color": "red"}, "1": {"text": "Up", "color": "green"}}}]}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "values": false}, "textMode": "value_and_name", "colorMode": "value", "graphMode": "none"}
+    },
+    {
+      "id": 9, "title": "Container CPU", "type": "timeseries",
+      "description": "Container CPU percent: 100% is one fully utilized logical CPU, so multicore usage may exceed 100%. Not host-normalized CPU ratio.",
+      "gridPos": {"x": 0, "y": 13, "w": 12, "h": 7},
+      "datasource": {"type": "prometheus", "uid": "soulcuts-prometheus"},
+      "maxDataPoints": 600, "interval": "30s",
+      "targets": [{"refId": "A", "expr": "soulcuts_container_cpu_percent{service=~\"${service:regex}\"}", "legendFormat": "{{service}}", "range": true}],
+      "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "custom": {"lineWidth": 1, "fillOpacity": 0, "showPoints": "never"}}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 10, "title": "Container memory", "type": "timeseries",
+      "description": "Container memory usage in bytes as reported by the collector. Not a configured memory limit or application heap profile.",
+      "gridPos": {"x": 12, "y": 13, "w": 12, "h": 7},
+      "datasource": {"type": "prometheus", "uid": "soulcuts-prometheus"},
+      "maxDataPoints": 600, "interval": "30s",
+      "targets": [{"refId": "A", "expr": "soulcuts_container_memory_bytes{service=~\"${service:regex}\"}", "legendFormat": "{{service}}", "range": true}],
+      "fieldConfig": {"defaults": {"unit": "bytes", "min": 0, "custom": {"lineWidth": 1, "fillOpacity": 0, "showPoints": "never"}}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "id": 11, "title": "Sanitized service events", "type": "logs",
+      "description": "At most 200 newest redacted events within the last hour. JSON fields: timestamp, service, level, event, message. Upstream sanitization removes sensitive content and limits event/message fields; omissions, truncation and redaction mean these are not complete application logs or traces. No arbitrary free-text search. Dashboard filters do not replace Loki authorization.",
+      "gridPos": {"x": 0, "y": 20, "w": 24, "h": 9},
+      "datasource": {"type": "loki", "uid": "soulcuts-loki"},
+      "timeFrom": "1h", "maxDataPoints": 200,
+      "targets": [{"refId": "A", "expr": "{job=\"soulcuts\",service=~\"${service:regex}\"} | json | __error__=\"\"", "queryType": "range", "direction": "backward", "maxLines": 200, "editorMode": "code"}],
+      "options": {"showTime": true, "showLabels": false, "showCommonLabels": false, "wrapLogMessage": true, "prettifyLogMessage": true, "enableLogDetails": true, "sortOrder": "Descending", "dedupStrategy": "none"}
+    }
+  ]
+}

@@ -1,5 +1,7 @@
 # Checkout receipt and payment UI release
 
+Historical record for the October 2026 release. Use the [current release runbook](shop-pilot-release.md) and the image pins in `versions/production.env` for deployment.
+
 User authorized this scoped production release on 2026-10-22. Prepared for sequential deployment; not accepted until the normal manual gates complete.
 
 - BE main `db9f9d81c5ec4cfeb3ba76976e413f597a993050` (PR11), exact production dependency base retained. New callback preference defaults false for new Shop orders; historical rows stay NULL. Item photo URL/package variant are immutable order snapshots.

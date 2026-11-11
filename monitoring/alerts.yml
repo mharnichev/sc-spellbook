@@ -1,0 +1,27 @@
+groups:
+  - name: soulcuts-production
+    rules:
+      - alert: SoulcutsCollectorStale
+        expr: time() - soulcuts_collector_last_success_unixtime > 180
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: Host collector has not succeeded for over three minutes
+      - alert: SoulcutsCollectorMissing
+        expr: absent(soulcuts_collector_last_success_unixtime) or up{job="soulcuts-host"} == 0
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: Host collector metrics are missing
+      - alert: SoulcutsServiceUnhealthy
+        expr: soulcuts_service_running == 0 or soulcuts_service_healthy == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: A production service is stopped or unhealthy
+      - alert: SoulcutsDiskLow
+        expr: soulcuts_host_disk_free_bytes / soulcuts_host_disk_size_bytes < 0.15
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: Production filesystem has less than 15 percent free

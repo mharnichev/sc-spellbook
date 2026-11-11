@@ -20,13 +20,124 @@ SPEC.loader.exec_module(MODULE)
 
 
 class RehearsalTests(unittest.TestCase):
+    def test_approved_backend_registry_references_reach_private_copy_setup(self):
+        repos = ('api', 'api-rewards-20261030-pr20')
+        for candidate in repos:
+            for previous in repos:
+                with self.subTest(candidate=candidate, previous=previous):
+                    self.check_registry_arguments(candidate, previous, accepted=True)
+
+    def test_unapproved_backend_references_are_rejected_before_copy_or_docker(self):
+        invalid = (
+            'ghcr.io/mharnichev/sc-be/api-other@sha256:' + 'a' * 64,
+            'ghcr.io/other/sc-be/api@sha256:' + 'a' * 64,
+            'ghcr.io/mharnichev/other/api@sha256:' + 'a' * 64,
+            'ghcr.io/mharnichev/sc-be/api:latest',
+            'ghcr.io/mharnichev/sc-be/api@sha256:' + 'a' * 63,
+            'ghcr.io/mharnichev/sc-be/api@sha256:' + 'A' * 64,
+        )
+        approved = 'ghcr.io/mharnichev/sc-be/api@sha256:' + 'a' * 64
+        for value in invalid:
+            for candidate, previous in ((value, approved), (approved, value)):
+                with self.subTest(candidate=candidate, previous=previous):
+                    self.check_registry_arguments(candidate, previous, accepted=False, complete=True)
+
+    def check_registry_arguments(self, candidate, previous, *, accepted, complete=False):
+        if not complete:
+            candidate = 'ghcr.io/mharnichev/sc-be/' + candidate + '@sha256:' + 'a' * 64
+            previous = 'ghcr.io/mharnichev/sc-be/' + previous + '@sha256:' + 'b' * 64
+        argv = [str(SCRIPT), '--candidate', candidate, '--previous', previous,
+                '--postgres-image', 'postgres@sha256:' + 'c' * 64, '--confirm-production-copy']
+        old_umask = os.umask(0o077)
+        try:
+            with patch.object(sys, 'argv', argv), \
+                 patch.object(MODULE.Path, 'mkdir', side_effect=RuntimeError('private-copy-setup')) as mkdir, \
+                 patch.object(MODULE.subprocess, 'run') as docker, \
+                 contextlib.redirect_stderr(io.StringIO()):
+                if accepted:
+                    with self.assertRaisesRegex(RuntimeError, '^private-copy-setup$'):
+                        MODULE.main()
+                    mkdir.assert_called_once()
+                else:
+                    with self.assertRaises(SystemExit) as error:
+                        MODULE.main()
+                    self.assertEqual(error.exception.code, 2)
+                    mkdir.assert_not_called()
+                docker.assert_not_called()
+        finally:
+            os.umask(old_umask)
+
+    def test_upcoming_target_retains_every_reviewed_source_baseline(self):
+        self.assertEqual(MODULE.HEAD, '0152_shop_online_admin_cancel')
+        self.assertEqual(set(MODULE.SOURCE_HEADS), {
+            '0110_nova_poshta_directory', '0129_shop_ingress_limits',
+            '0134_shop_canonical_collation', '0136_category_names_en',
+            '0137_shop_online_payment', '0138_shop_content_en', '0139_shop_input_guards',
+            '0140_shop_order_receipt_snapshot', '0143_auto_checkout_checkpoint',
+            '0144_master_rewards', '0146_merge_inventory_booking', '0147_pos_checkout_intents', '0148_master_mono_returned_url', '0149_master_mono_opaque_route', '0150_master_mono_expired_close', '0151_master_mono_url_provenance', '0152_shop_online_admin_cancel',
+        })
+        for head in ('0143_auto_checkout_checkpoint', '0144_master_rewards', '0146_merge_inventory_booking', '0147_pos_checkout_intents', '0148_master_mono_returned_url', '0149_master_mono_opaque_route', '0150_master_mono_expired_close', MODULE.PREVIOUS_HEAD, MODULE.HEAD):
+            with self.subTest(head=head):
+                self.assertEqual(MODULE.source_archive_name(head), 'production-' + head[:4] + '.dump')
+                self.assertIsNone(MODULE.verify_checkout_upgrade(
+                    lambda *_: self.fail('Historical prices and reminders must not be revalidated as new backfill'), head))
+        with self.assertRaisesRegex(RuntimeError, 'Unreviewed source baseline'):
+            MODULE.source_archive_name('0148_unreviewed')
+
+    def test_current_production_baseline_does_not_reapply_historical_checkout_assertions(self):
+        self.assertIn('0143_auto_checkout_checkpoint', MODULE.SOURCE_HEADS)
+        self.assertEqual(MODULE.source_archive_name('0143_auto_checkout_checkpoint'), 'production-0143.dump')
+        def unexpected_sql(*args):
+            self.fail('Existing production prices and reminders must not be treated as new backfill')
+        self.assertIsNone(MODULE.verify_checkout_upgrade(unexpected_sql, '0143_auto_checkout_checkpoint'))
+
+    def test_checkout_upgrade_validates_prices_and_no_historical_enrollment(self):
+        queries = []
+        def sql(database, query):
+            self.assertEqual(database, 'upgrade_copy')
+            queries.append(query)
+            return '0'
+        self.assertEqual(MODULE.verify_checkout_upgrade(sql, '0140_shop_order_receipt_snapshot'),
+                         dict(rrp_backfill_verified=True, historical_reminders=0))
+        self.assertIn('COALESCE(recommended_retail_price, price)', queries[0])
+        self.assertIn('checkout_reminders', queries[1])
+
+    def test_checkout_upgrade_rejects_price_drift_or_historical_enrollment(self):
+        for replies, message in ((iter(['1']), 'RRP backfill'),
+                                 (iter(['0', '1']), 'historical checkout')):
+            with self.subTest(message=message), self.assertRaisesRegex(RuntimeError, message):
+                MODULE.verify_checkout_upgrade(lambda *_: next(replies), MODULE.BASE)
+
+    def test_repeated_head_does_not_treat_existing_reminders_as_migration_enrollment(self):
+        self.assertIsNone(MODULE.verify_checkout_upgrade(lambda *_: self.fail('unexpected query'), MODULE.HEAD))
+
+    def test_receipt_snapshot_source_upgrades_without_email_activation(self):
+        observed = {}
+        _, error, reported, _ = self.exercise(source_head='0140_shop_order_receipt_snapshot', observed=observed)
+        self.assertIsNone(error)
+        self.assertTrue(reported)
+        self.assertEqual(observed['metadata']['head'], '0152_shop_online_admin_cancel')
+        self.assertEqual(set(observed['metadata']['archives']),
+                         {'production-0140.dump', 'upgraded-0145.dump'})
+        self.assertEqual(observed['english_calls'], [])
+
+    def test_input_guards_source_upgrades_to_receipt_snapshot(self):
+        observed = {}
+        _, error, reported, _ = self.exercise(source_head='0139_shop_input_guards', observed=observed)
+        self.assertIsNone(error)
+        self.assertTrue(reported)
+        self.assertEqual(observed['metadata']['head'], '0152_shop_online_admin_cancel')
+        self.assertEqual(set(observed['metadata']['archives']),
+                         {'production-0139.dump', 'upgraded-0145.dump'})
+        self.assertEqual(observed['english_calls'], [])
+
     def test_input_guards_upgrade_preserves_content_without_reapplying_backfill(self):
         observed = {}
         calls, error, reported, _ = self.exercise(source_head='0138_shop_content_en', observed=observed)
         self.assertIsNone(error)
         self.assertTrue(reported)
-        self.assertEqual(observed['metadata']['head'], '0139_shop_input_guards')
-        self.assertEqual(set(observed['metadata']['archives']), {'production-0138.dump', 'upgraded-0139.dump'})
+        self.assertEqual(observed['metadata']['head'], '0152_shop_online_admin_cancel')
+        self.assertEqual(set(observed['metadata']['archives']), {'production-0138.dump', 'upgraded-0145.dump'})
         self.assertEqual(observed['english_calls'], [])
         self.assertFalse(any('-m' in command for command in calls))
 
@@ -35,7 +146,7 @@ class RehearsalTests(unittest.TestCase):
         _, error, reported, _ = self.exercise(source_head='0137_shop_online_payment', observed=observed)
         self.assertIsNone(error)
         self.assertTrue(reported)
-        self.assertEqual(observed['metadata']['head'], '0139_shop_input_guards')
+        self.assertEqual(observed['metadata']['head'], '0152_shop_online_admin_cancel')
         self.assertIn('production-0137.dump', observed['metadata']['archives'])
 
     def test_current_english_baseline_is_a_supported_payment_source(self):
@@ -89,13 +200,15 @@ class RehearsalTests(unittest.TestCase):
     def exercise(self, *, stop_fails=False, row_drift=False, no_space=False,
                  source_head=None, restored_head=None, locale='en_US.utf8',
                  english=False, english_row_drift=False, english_cli_failure=None,
+                 target_head=None, sequence_drift=False, restore_row_drift=False,
+                 restore_sequence_drift=False, restore_fails=False, ledger_drift=False,
                  observed=None):
         expected_head = source_head or ('0134_shop_canonical_collation' if english else MODULE.BASE)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / 'backups').mkdir()
             calls, migrated, fingerprints = [], False, 0
-            english_calls, fingerprint_queries = [], []
+            english_calls, fingerprint_queries, sequence_queries, fingerprint_results = [], [], [], []
             inputs = root / 'backups' / 'input-fixture'
             hashes, input_bytes = {}, {}
             if english:
@@ -108,11 +221,26 @@ class RehearsalTests(unittest.TestCase):
                     input_bytes[name] = data
             original_tables = ({'products': ['id', 'name', 'stock_quantity'],
                                 'categories': ['id', 'name', 'parent_id']} if english else {'customers': ['id']})
+            historical_rows = {}
+            if expected_head in ('0144_master_rewards', '0147_pos_checkout_intents', '0148_master_mono_returned_url', '0149_master_mono_opaque_route', '0150_master_mono_expired_close', MODULE.PREVIOUS_HEAD, MODULE.HEAD):
+                # Synthetic pre-existing rows: an intentional price override, an enrolled
+                # reminder and an append-only historical ledger must all survive unchanged.
+                original_tables.update(products=['id', 'price', 'recommended_retail_price', 'shop_price'],
+                                       checkout_reminders=['id', 'state'],
+                                       master_reward_ledger=['id', 'amount', 'created_at'])
+                historical_rows = {
+                    'products': [dict(id=1, price='100', recommended_retail_price='120', shop_price='95')],
+                    'checkout_reminders': [dict(id=7, state='sent')],
+                    'master_reward_ledger': [dict(id=11, amount='25', created_at='2026-10-01'),
+                                             dict(id=12, amount='-5', created_at='2026-10-02')],
+                }
             upgraded_tables = dict(original_tables)
             if english:
                 upgraded_tables = {'products': original_tables['products'] + ['name_en', 'product_type_en'],
                                    'categories': original_tables['categories'] + ['name_en'],
                                    'alembic_version': ['version_num']}
+            upgraded_tables.update(alembic_version=['version_num'],
+                                   booking_funnel_observations=['id', 'created_at'])
 
             def fake_path(value):
                 if value == '/opt/soulcuts/backups':
@@ -139,10 +267,13 @@ class RehearsalTests(unittest.TestCase):
                         value = b'{"products":552,"categories":44}'
                     elif query == MODULE.SCHEMA_SQL:
                         value = b'{"unvalidated_constraints":0,"invalid_indexes":0,"indexes":[]}'
+                    elif query in ('SELECT count(*) FROM products WHERE shop_price IS DISTINCT FROM COALESCE(recommended_retail_price, price)',
+                                   'SELECT count(*) FROM checkout_reminders'):
+                        value = b'1' if historical_rows else b'0'
                     elif 'pg_get_constraintdef(oid,false)' in query:
                         value = b'{}'
                     elif query == 'SELECT version_num FROM alembic_version':
-                        value = (MODULE.HEAD if migrated else (restored_head or expected_head)).encode()
+                        value = ((target_head or MODULE.HEAD) if migrated else (restored_head or expected_head)).encode()
                     elif query in ('SELECT datcollate FROM pg_database WHERE datname=current_database()',
                                    'SELECT datctype FROM pg_database WHERE datname=current_database()'):
                         value = locale.encode()
@@ -153,17 +284,48 @@ class RehearsalTests(unittest.TestCase):
                         fingerprints += 1
                         database = command[command.index('-d') + 1]
                         fingerprint_queries.append((database, query))
-                        changed = (row_drift and fingerprints == 2) or (english_row_drift and fingerprints == 3)
+                        changed = ((row_drift and fingerprints == 2)
+                                   or (english_row_drift and fingerprints == 3)
+                                   or (restore_row_drift and database == 'restore_copy'))
                         digest = 'changed' if changed else 'with-english' if '"name_en"' in query else 'same'
-                        value = json.dumps([dict(name=table, rows=1, digest=digest)
-                                            for table in sorted(upgraded_tables if '"name_en"' in query else original_tables)]).encode()
+                        result = []
+                        for table in sorted(upgraded_tables):
+                            if 'FROM public.' + MODULE.identifier(table) not in query:
+                                continue
+                            rows = historical_rows.get(table)
+                            table_digest = digest
+                            if rows is not None:
+                                payload = rows
+                                if ledger_drift and fingerprints == 2 and table == 'master_reward_ledger':
+                                    payload = [{**rows[0], 'amount': '999'}, rows[1]]
+                                if not changed:
+                                    table_digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+                            result.append(dict(name=table, rows=len(rows) if rows is not None else 1,
+                                               digest=table_digest))
+                        value = json.dumps(result).encode()
+                        fingerprint_results.append((database, result))
                     elif 'pg_sequences' in query:
-                        value = b'["customers_id_seq"]'
+                        names = ['customers_id_seq']
+                        if historical_rows:
+                            names.append('master_reward_ledger_id_seq')
+                        if migrated:
+                            names.append('booking_funnel_observations_id_seq')
+                        value = json.dumps(names).encode()
                     elif 'last_value,is_called' in query:
-                        value = b'10|t'
+                        database = command[command.index('-d') + 1]
+                        sequence_queries.append((database, query))
+                        changed = (sequence_drift and migrated and database == 'upgrade_copy'
+                                   or restore_sequence_drift and database == 'restore_copy')
+                        value = b'11|t' if changed else b'10|t'
                     else:
                         self.assertIn('CREATE DATABASE restore_copy', query)
                 elif command[:2] == ['docker', 'run'] and command[-2:] == ['upgrade', 'head']:
+                    values = dict(line.split('=', 1) for line in Path(command[command.index('--env-file') + 1]).read_text().splitlines() if '=' in line)
+                    for key in ('EMAIL_NOTIFICATIONS_ENABLED', 'CHECKOUT_REMINDER_ENABLED',
+                                'CHECKOUT_REMINDER_SCHEDULER_ENABLED', 'CHECKOUT_REMINDER_LIVE_ENABLED',
+                                'CHECKOUT_REMINDER_LAUNCH_APPROVED'):
+                        self.assertEqual(values[key], 'false')
+                    self.assertEqual(values['CHECKOUT_REMINDER_DRY_RUN'], 'true')
                     migrated = True
                 elif command[:2] == ['docker', 'run'] and '-m' in command:
                     self.assertTrue(english)
@@ -195,6 +357,16 @@ class RehearsalTests(unittest.TestCase):
                     value = b'[]'
                 elif 'pg_dump' in command:
                     kwargs['stdout'].write(b'CREATE TABLE public.customers(id integer);\n')
+                elif 'pg_restore' in command:
+                    self.assertIn('--exit-on-error', command)
+                    self.assertIn('--single-transaction', command)
+                    self.assertIn('--no-owner', command)
+                    self.assertIn('--no-privileges', command)
+                    archive = Path(kwargs['stdin'].name)
+                    self.assertEqual(archive.stat().st_mode & 0o777, 0o600)
+                    self.assertEqual(archive.name, 'upgraded-0145.dump' if migrated
+                                     else 'production-' + expected_head[:4] + '.dump')
+                    status = int(restore_fails and command[command.index('-d') + 1] == 'restore_copy')
                 elif command[:2] == ['docker', 'stop']:
                     status = int(stop_fails)
                 elif command[:3] == ['docker', 'ps', '-aq'] and english:
@@ -245,10 +417,152 @@ class RehearsalTests(unittest.TestCase):
                         self.assertEqual(child.stat().st_mode & 0o777, 0o400 if path.name == 'reviewed-inputs' else 0o600)
             if observed is not None:
                 observed.update(argv=argv, metadata=metadata, hashes=hashes, english_calls=english_calls,
-                                fingerprint_queries=fingerprint_queries,
+                                fingerprint_queries=fingerprint_queries, sequence_queries=sequence_queries,
+                                historical_rows=historical_rows, fingerprint_results=fingerprint_results,
                                 reports={path.name: json.loads(path.read_text())
                                          for path in (root / 'backups').glob('*/english-reports/*.json')})
             return calls, error, bool(report), output.getvalue()
+
+    def test_0151_source_upgrades_without_changing_existing_ledger_or_reminders(self):
+        observed = {}
+        _, error, reported, _ = self.exercise(source_head='0151_master_mono_url_provenance', observed=observed)
+        self.assertIsNone(error)
+        self.assertTrue(reported)
+        self.assertEqual(observed['metadata']['source_head'], '0151_master_mono_url_provenance')
+        self.assertEqual(observed['metadata']['head'], '0152_shop_online_admin_cancel')
+        self.assertIsNone(observed['metadata']['checkout_upgrade'])
+        self.assertTrue(observed['metadata']['existing_rows_unchanged'])
+        self.assertTrue(observed['metadata']['existing_sequences_unchanged'])
+
+    def test_0150_source_upgrades_without_changing_existing_ledger_or_reminders(self):
+        observed = {}
+        _, error, reported, _ = self.exercise(source_head='0150_master_mono_expired_close', observed=observed)
+        self.assertIsNone(error)
+        self.assertTrue(reported)
+        self.assertEqual(observed['metadata']['source_head'], '0150_master_mono_expired_close')
+        self.assertEqual(observed['metadata']['head'], '0152_shop_online_admin_cancel')
+        self.assertIsNone(observed['metadata']['checkout_upgrade'])
+        self.assertTrue(observed['metadata']['existing_rows_unchanged'])
+        self.assertTrue(observed['metadata']['existing_sequences_unchanged'])
+        self.assertIn('master_reward_ledger', observed['historical_rows'])
+
+    def test_0149_source_upgrades_without_changing_existing_ledger_or_reminders(self):
+        observed = {}
+        _, error, reported, _ = self.exercise(source_head='0149_master_mono_opaque_route', observed=observed)
+        self.assertIsNone(error)
+        self.assertTrue(reported)
+        self.assertEqual(observed['metadata']['source_head'], '0149_master_mono_opaque_route')
+        self.assertEqual(observed['metadata']['head'], '0152_shop_online_admin_cancel')
+        self.assertIsNone(observed['metadata']['checkout_upgrade'])
+        self.assertTrue(observed['metadata']['existing_rows_unchanged'])
+        self.assertTrue(observed['metadata']['existing_sequences_unchanged'])
+        self.assertIn('master_reward_ledger', observed['historical_rows'])
+
+    def test_0148_source_upgrades_without_changing_existing_ledger_or_reminders(self):
+        observed = {}
+        _, error, reported, _ = self.exercise(source_head='0148_master_mono_returned_url', observed=observed)
+        self.assertIsNone(error)
+        self.assertTrue(reported)
+        self.assertEqual(observed['metadata']['source_head'], '0148_master_mono_returned_url')
+        self.assertEqual(observed['metadata']['head'], '0152_shop_online_admin_cancel')
+        self.assertIsNone(observed['metadata']['checkout_upgrade'])
+        self.assertTrue(observed['metadata']['existing_rows_unchanged'])
+        self.assertTrue(observed['metadata']['existing_sequences_unchanged'])
+        self.assertIn('master_reward_ledger', observed['historical_rows'])
+
+    def test_0147_source_upgrades_without_changing_existing_ledger_or_reminders(self):
+        observed = {}
+        _, error, reported, _ = self.exercise(source_head='0147_pos_checkout_intents', observed=observed)
+        self.assertIsNone(error)
+        self.assertTrue(reported)
+        self.assertEqual(observed['metadata']['source_head'], '0147_pos_checkout_intents')
+        self.assertEqual(observed['metadata']['head'], '0152_shop_online_admin_cancel')
+        self.assertIsNone(observed['metadata']['checkout_upgrade'])
+        self.assertTrue(observed['metadata']['existing_rows_unchanged'])
+        self.assertTrue(observed['metadata']['existing_sequences_unchanged'])
+        self.assertIn('master_reward_ledger', observed['historical_rows'])
+
+    def test_0144_source_to_0145_preserves_historical_ledger_prices_and_reminders(self):
+        observed = {}
+        calls, error, reported, output = self.exercise(source_head='0144_master_rewards', observed=observed)
+        self.assertIsNone(error)
+        self.assertTrue(reported)
+        self.assertIn('"head": "0152_shop_online_admin_cancel"', output)
+        metadata = observed['metadata']
+        self.assertEqual(metadata['source_head'], '0144_master_rewards')
+        self.assertEqual(metadata['head'], '0152_shop_online_admin_cancel')
+        self.assertEqual(set(metadata['archives']), {'production-0144.dump', 'upgraded-0145.dump'})
+        self.assertIsNone(metadata['checkout_upgrade'])
+        self.assertIsNone(metadata['english_backfill'])
+        self.assertIsNone(metadata['content_backfill'])
+        for key in ('existing_rows_unchanged', 'existing_sequences_unchanged',
+                    'restored_rows_equal', 'restored_sequences_equal',
+                    'restored_schema_equal_after_finite_contract'):
+            self.assertTrue(metadata[key])
+        snapshots = observed['fingerprint_results']
+        self.assertEqual([database for database, _ in snapshots],
+                         ['upgrade_copy', 'upgrade_copy', 'upgrade_copy', 'restore_copy'])
+        self.assertEqual(snapshots[0], snapshots[1])
+        self.assertEqual(snapshots[2][1], snapshots[3][1])
+        self.assertEqual(next(row['rows'] for row in snapshots[0][1]
+                              if row['name'] == 'master_reward_ledger'), 2)
+        self.assertIn('booking_funnel_observations', {row['name'] for row in snapshots[2][1]})
+        for _, query in observed['fingerprint_queries'][:2]:
+            self.assertIn('SELECT "id","amount","created_at" FROM public."master_reward_ledger"', query)
+            self.assertIn('SELECT "id","state" FROM public."checkout_reminders"', query)
+            self.assertIn('"shop_price"', query)
+            self.assertNotIn('booking_funnel_observations', query)
+        self.assertEqual(observed['historical_rows']['products'][0]['shop_price'], '95')
+        self.assertTrue(any('master_reward_ledger_id_seq' in query
+                            for _, query in observed['sequence_queries']))
+        self.assertTrue(any(database == 'restore_copy' and 'booking_funnel_observations_id_seq' in query
+                            for database, query in observed['sequence_queries']))
+        self.assertEqual(len([call for call in calls if 'soulcuts-postgres-1' in call]), 2)
+
+    def test_candidate_wrong_head_rejects_before_archive_restore_or_compatibility(self):
+        for head in ('0144_master_rewards', '0148_unreviewed'):
+            with self.subTest(head=head):
+                calls, error, reported, output = self.exercise(source_head='0144_master_rewards', target_head=head)
+                self.assertIn('exact reviewed head', error)
+                self.assertFalse(reported)
+                self.assertNotIn('"result": "passed"', output)
+                self.assertFalse(any('restore_copy' in call for call in calls))
+                self.assertFalse(any(call[-1] == MODULE.FINITE_COMPARISON for call in calls))
+                self.assertTrue(any(call[:4] == ['docker', 'stop', '--time', '30'] for call in calls))
+
+    def test_0144_historical_ledger_mutation_rejects_without_success_report(self):
+        observed = {}
+        calls, error, reported, output = self.exercise(source_head='0144_master_rewards',
+                                                      ledger_drift=True, observed=observed)
+        self.assertIn('Existing production rows changed', error)
+        self.assertFalse(reported)
+        self.assertNotIn('"result": "passed"', output)
+        before, after = [dict((row['name'], row['digest']) for row in rows)
+                         for _, rows in observed['fingerprint_results']]
+        self.assertNotEqual(before.pop('master_reward_ledger'), after.pop('master_reward_ledger'))
+        self.assertEqual(before, after)
+        self.assertFalse(any('restore_copy' in call for call in calls))
+
+    def test_0144_sequence_drift_rejects_before_upgraded_restore(self):
+        calls, error, reported, output = self.exercise(source_head='0144_master_rewards', sequence_drift=True)
+        self.assertIn('Existing production sequences changed', error)
+        self.assertFalse(reported)
+        self.assertNotIn('"result": "passed"', output)
+        self.assertFalse(any('restore_copy' in call for call in calls))
+
+    def test_0145_restore_rejects_row_or_sequence_drift_and_restore_failure(self):
+        for options, message in ((dict(restore_row_drift=True), 'restore changed row fingerprints'),
+                                 (dict(restore_sequence_drift=True), 'restore changed sequences'),
+                                 (dict(restore_fails=True), 'Private copy restore failed')):
+            with self.subTest(options=options):
+                calls, error, reported, output = self.exercise(source_head='0144_master_rewards', **options)
+                self.assertIn(message, error)
+                self.assertFalse(reported)
+                self.assertNotIn('"result": "passed"', output)
+                restore = next(call for call in calls if 'pg_restore' in call and 'restore_copy' in call)
+                self.assertIn('--single-transaction', restore)
+                self.assertFalse(any(call[-1] == MODULE.FINITE_COMPARISON for call in calls))
+                self.assertTrue(any(call[:4] == ['docker', 'stop', '--time', '30'] for call in calls))
 
     def test_full_copy_plan_never_restores_or_migrates_production(self):
         calls, error, reported, output = self.exercise()
@@ -281,8 +595,8 @@ class RehearsalTests(unittest.TestCase):
                     ('products', 'idempotent'), ('categories', 'idempotent')]
         self.assertEqual(observed['english_calls'], expected)
         metadata = observed['metadata']
-        self.assertEqual(metadata['head'], '0139_shop_input_guards')
-        self.assertEqual(set(metadata['archives']), {'production-0134.dump', 'upgraded-0139.dump'})
+        self.assertEqual(metadata['head'], '0152_shop_online_admin_cancel')
+        self.assertEqual(set(metadata['archives']), {'production-0134.dump', 'upgraded-0145.dump'})
         english = metadata['english_backfill']
         self.assertEqual(english['counts'], dict(products=552, categories=44))
         self.assertEqual(english['input_sha256'], observed['hashes'])

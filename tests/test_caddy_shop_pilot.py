@@ -45,11 +45,13 @@ class CaddyPilotTests(unittest.TestCase):
         cls.temp.cleanup()
 
     @classmethod
-    def request(cls, path, host='soulcuts.com.ua', headers=(), check=True):
+    def request(cls, path, host='soulcuts.com.ua', headers=(), check=True, body=None):
         command = ['docker', 'exec', cls.name, 'wget', '-S', '-q', '-O', '-', '-T', '2',
                    '--header', 'Host: ' + host]
         for header in headers:
             command.extend(['--header', header])
+        if body is not None:
+            command.extend(['--post-data', body])
         return subprocess.run(command + ['http://127.0.0.1:18080' + path], capture_output=True, text=True, check=check)
 
     def test_shop_and_blog_prefixes_not_stripped(self):
@@ -86,6 +88,15 @@ class CaddyPilotTests(unittest.TestCase):
         support = self.request('/support-widget', 'www.soulcuts.com.ua')
         self.assertTrue(support.stdout.startswith('public-site|'))
         self.assertNotIn('X-Frame-Options:', support.stderr)
+
+    def test_promo_quote_preserves_shop_auth_without_broadening_public_routes(self):
+        path = '/api/v1/public/shop-promotions/quote'
+        result = self.request(path, headers=['Authorization: Bearer synthetic', 'Content-Type: application/json'], body='{"items":[]}')
+        self.assertEqual(result.stdout, f'api-ingress-backend|{path}|Bearer synthetic|127.0.0.1')
+        self.assertIn('Cache-Control: no-store, private', result.stderr)
+        for neighbor in ('/api/v1/public/shop-promotions', '/api/v1/public/shop-promotions/quote/extra',
+                         '/api/v1/public/shop-promotions/private', '/api/v1/backoffice/shop-promotions'):
+            self.assertTrue(self.request(neighbor).stdout.startswith('public-site|'))
 
     def test_admin_product_media_reaches_existing_backend_without_rewriting(self):
         for path in ('/media/products/processed.webp', '/media/products/nested/photo.webp?version=1'):

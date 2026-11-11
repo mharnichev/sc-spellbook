@@ -57,7 +57,7 @@ soulcuts.com.ua {
 	header @shop_pages Cache-Control "no-store, private"
 	# Only Shop API families bypass the barbershop BFF. Other API paths retain
 	# its cookie/session-marker, token filtering and public-only boundary.
-	@shop_api path /api/v1/public/customers /api/v1/public/customers/* /api/v1/public/products /api/v1/public/products/* /api/v1/public/categories /api/v1/public/categories/* /api/v1/public/brands /api/v1/public/brands/* /api/v1/public/delivery /api/v1/public/delivery/* /api/v1/public/orders /api/v1/public/orders/* /api/v1/public/feedback/email
+	@shop_api path /api/v1/public/customers /api/v1/public/customers/* /api/v1/public/products /api/v1/public/products/* /api/v1/public/categories /api/v1/public/categories/* /api/v1/public/brands /api/v1/public/brands/* /api/v1/public/delivery /api/v1/public/delivery/* /api/v1/public/orders /api/v1/public/orders/* /api/v1/public/feedback/email /api/v1/public/shop-promotions/quote
 	handle @shop_api {
 		import direct_api
 	}

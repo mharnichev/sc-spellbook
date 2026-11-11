@@ -1,0 +1,117 @@
+name: soulcuts-monitoring
+
+x-isolation: &isolation
+  restart: unless-stopped
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  pids_limit: 128
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+  networks: [monitoring]
+  logging:
+    driver: json-file
+    options:
+      max-size: 5m
+      max-file: "2"
+
+services:
+  grafana:
+    <<: *isolation
+    image: ${GRAFANA_IMAGE:?Immutable Grafana image required}
+    cpus: "1.0"
+    mem_limit: 768m
+    networks: [monitoring, ui]
+    group_add: ["${MONITORING_GID:-1000}"]
+    ports:
+      - 127.0.0.1:3300:3000
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/admin_password
+      GF_SECURITY_SECRET_KEY__FILE: /run/secrets/secret_key
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_AUTH_BASIC_ENABLED: "true"
+      GF_SECURITY_COOKIE_SAMESITE: strict
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
+      GF_SERVER_ROOT_URL: http://localhost:13300/
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_PATHS_PLUGINS: /usr/share/grafana/data/plugins-bundled
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GF_PLUGINS_PREINSTALL_AUTO_UPDATE: "false"
+      GF_LOG_MODE: console
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ${MONITORING_ROOT:-/opt/soulcuts/monitoring}/secrets/grafana_admin_password:/run/secrets/admin_password:ro
+      - ${MONITORING_ROOT:-/opt/soulcuts/monitoring}/secrets/grafana_secret_key:/run/secrets/secret_key:ro
+
+  prometheus:
+    <<: *isolation
+    image: ${PROMETHEUS_IMAGE:?Immutable Prometheus image required}
+    cpus: "0.5"
+    mem_limit: 384m
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --storage.tsdb.retention.size=512MB
+    volumes:
+      - prometheus_data:/prometheus
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alerts.yml:/etc/prometheus/alerts.yml:ro
+
+  loki:
+    <<: *isolation
+    image: ${LOKI_IMAGE:?Immutable Loki image required}
+    cpus: "0.5"
+    mem_limit: 512m
+    command: [-config.file=/etc/loki/loki.yml]
+    volumes:
+      - loki_data:/loki
+      - ./loki.yml:/etc/loki/loki.yml:ro
+
+  alloy:
+    <<: *isolation
+    image: ${ALLOY_IMAGE:?Immutable Alloy image required}
+    user: "${MONITORING_UID:-1000}:${MONITORING_GID:-1000}"
+    cpus: "0.25"
+    mem_limit: 128m
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy
+      - --disable-reporting
+      - /etc/alloy/config.alloy
+    volumes:
+      - ./config.alloy:/etc/alloy/config.alloy:ro
+      - ${MONITORING_ROOT:-/opt/soulcuts/monitoring}/spool/logs:/spool/logs:ro
+      - ${MONITORING_ROOT:-/opt/soulcuts/monitoring}/data/alloy:/var/lib/alloy
+
+  node-exporter:
+    <<: *isolation
+    image: ${NODE_EXPORTER_IMAGE:?Immutable node exporter image required}
+    cpus: "0.1"
+    mem_limit: 48m
+    group_add: ["${MONITORING_GID:-1000}"]
+    command:
+      - --collector.disable-defaults
+      - --collector.textfile
+      - --collector.textfile.directory=/metrics
+    volumes:
+      - ${MONITORING_ROOT:-/opt/soulcuts/monitoring}/spool/metrics:/metrics:ro
+
+networks:
+  monitoring:
+    internal: true
+  ui:
+    # Only Grafana joins this bridge, so Docker can publish its loopback port.
+    # Loki, Prometheus and the collectors remain on the internal network only.
+
+volumes:
+  grafana_data:
+  prometheus_data:
+  loki_data:

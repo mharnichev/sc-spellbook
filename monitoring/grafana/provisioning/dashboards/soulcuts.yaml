@@ -1,0 +1,15 @@
+{
+  "apiVersion": 1,
+  "providers": [
+    {
+      "name": "Soulcuts",
+      "orgId": 1,
+      "folder": "Soulcuts",
+      "type": "file",
+      "disableDeletion": true,
+      "updateIntervalSeconds": 30,
+      "allowUiUpdates": false,
+      "options": {"path": "/var/lib/grafana/dashboards", "foldersFromFilesStructure": false}
+    }
+  ]
+}
