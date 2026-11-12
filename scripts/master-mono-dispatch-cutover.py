@@ -110,8 +110,11 @@ def verify_flags(original, actual, paused):
 def verify_candidate_flags(original, candidate, writer):
     require(candidate.get(REFUND_FLAG) is False, 'Candidate must disable live refunds')
     if writer == 'backend':
-        require(all(candidate.get(flag) is False for flag in CHECKOUT_FLAGS),
-                'Candidate API must keep checkout and its pilot closed')
+        checkout, pilot = CHECKOUT_FLAGS
+        require(candidate.get(pilot) is False, 'Candidate API must keep the checkout pilot closed')
+        public = candidate.get(checkout)
+        require(public is False or (public is True and original.get(checkout) is True),
+                'Candidate API must not open public checkout during cutover')
     expected = {**original, REFUND_FLAG: False}
     require(all(flag in candidate and candidate[flag] == value for flag, value in expected.items()
                 if flag not in CHECKOUT_FLAGS), 'Candidate changes existing writer flags')

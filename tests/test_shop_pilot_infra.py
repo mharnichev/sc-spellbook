@@ -185,10 +185,10 @@ class ComposeTests(unittest.TestCase):
         self.assertEqual(migration['profiles'], ['release'])
         self.assertNotIn('volumes', migration)
 
-    def test_reviewed_shop_payment_switches_inherit_backend_env_without_opening_checkout(self):
+    def test_reviewed_shop_payment_switches_inherit_backend_env_with_public_checkout(self):
         enabled = ('SHOP_ORDER_OPERATIONS_ENABLED', 'SHOP_PAYMENTS_ENABLED',
                    'SHOP_MONOBANK_LIVE_TRANSPORT_ENABLED')
-        pinned = ('SHOP_CHECKOUT_ENABLED', 'SHOP_CHECKBOX_ENABLED',
+        pinned = ('SHOP_CHECKBOX_ENABLED',
                   'SHOP_CHECKBOX_LIVE_TRANSPORT_ENABLED', 'PROVIDER_SANDBOX_ENABLED')
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)/'backend.env'
@@ -201,6 +201,7 @@ class ComposeTests(unittest.TestCase):
                                     capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         actual = json.loads(result.stdout)['services']['backend']['environment']
+        self.assertEqual(actual['SHOP_CHECKOUT_ENABLED'], 'true')
         self.assertEqual({key: actual[key] for key in enabled}, dict.fromkeys(enabled, 'true'))
         self.assertEqual({key: actual[key] for key in pinned}, dict.fromkeys(pinned, 'false'))
 
@@ -246,10 +247,12 @@ class ComposeTests(unittest.TestCase):
                     process.kill()
                 process.communicate()
 
-    def test_shop_and_all_provider_switches_fail_closed(self):
+    def test_public_checkout_is_open_and_other_provider_switches_fail_closed(self):
         self.assertEqual(self.config['services']['admin-app']['environment']['NUXT_PUBLIC_API_BASE'], '/api/v1')
         api = self.config['services']['backend']['environment']
-        keys = [key for key in api if key.startswith('SHOP_') or key.endswith('_MOCK_ENABLED')]
+        self.assertEqual(api['SHOP_CHECKOUT_ENABLED'], 'true')
+        keys = [key for key in api if key != 'SHOP_CHECKOUT_ENABLED'
+                and (key.startswith('SHOP_') or key.endswith('_MOCK_ENABLED'))]
         for key in keys + ['PROVIDER_SANDBOX_ENABLED', 'SANDBOX_PROVIDER_NETWORK_ENABLED',
                            'NP_MOCK_SHIPMENTS_ENABLED', 'LOCAL_SALES_SIMULATION_ENABLED', 'NP_TRACKING_ENABLED']:
             self.assertEqual(api[key], 'false', key)

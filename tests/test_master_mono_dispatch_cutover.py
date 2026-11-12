@@ -88,7 +88,10 @@ class CutoverTests(unittest.TestCase):
         original = {MODULE.FLAG: True, 'DEBUG': False, checkout: True, pilot: False}
         target = {**original, checkout: False, MODULE.REFUND_FLAG: False}
         MODULE.verify_candidate_flags(original, target, 'backend')
-        for changed in ({checkout: True}, {pilot: True}, {MODULE.REFUND_FLAG: True},
+        MODULE.verify_candidate_flags(original, {**target, checkout: True}, 'backend')
+        with self.assertRaises(RuntimeError):
+            MODULE.verify_candidate_flags({**original, checkout: False}, {**target, checkout: True}, 'backend')
+        for changed in ({pilot: True}, {MODULE.REFUND_FLAG: True},
                         {'DEBUG': True}, {'NEW_FLAG': True}):
             with self.subTest(changed=changed), self.assertRaises(RuntimeError):
                 MODULE.verify_candidate_flags(original, {**target, **changed}, 'backend')
