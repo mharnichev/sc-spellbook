@@ -63,6 +63,13 @@ class CaddyPilotTests(unittest.TestCase):
                 if path.startswith('/shop/'):
                     self.assertIn('X-Robots-Tag: noindex, nofollow, noarchive', result.stderr)
 
+    def test_shop_payment_frame_origins_are_exact(self):
+        expected = 'Content-Security-Policy: frame-src https://pay.mbnk.biz https://pay.monobank.ua'
+        for path in ('/shop/checkout/purchase', '/shop/payment/123', '/shop/cabinet/orders/123'):
+            with self.subTest(path=path):
+                self.assertIn(expected, [line.strip() for line in self.request(path).stderr.splitlines()])
+        self.assertNotIn('frame-src', self.request('/shop/').stderr)
+
     def test_bff_sensitive_paths_still_reach_public_site(self):
         for path in ('/api/v1/public/bookings', '/api/v1/public/bookings/quote',
                      '/api/v1/public/customer-activity/session', '/api/v1/public/reviews/request',
