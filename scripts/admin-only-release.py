@@ -14,6 +14,10 @@ BALANCE_INGRESS = (
     b'\t@shop_balance_entries {\n\t\tmethod GET POST\n\t\tpath /api/v1/shop-balance/entries\n\t}\n'
     b'\thandle @shop_balance_entries {\n\t\timport direct_api\n\t}\n'
 )
+SHOP_PAYMENT_CSP = (
+    b'\t@shop_payment_pages path /shop/checkout /shop/checkout/* /shop/payment/* /shop/cabinet/orders/*\n'
+    b'\theader @shop_payment_pages Content-Security-Policy "frame-src https://pay.mbnk.biz https://pay.monobank.ua"\n'
+)
 
 
 def admin_image(previous, current, *, allow_unchanged=False, backend_admin=False,
@@ -52,6 +56,10 @@ def admin_image(previous, current, *, allow_unchanged=False, backend_admin=False
                     and after == before.replace(runtime_override, b'', 1)):
                 continue
             if shop_ingress and name == 'caddy/Caddyfile':
+                csp_anchor = b'\theader @shop_pages Cache-Control "no-store, private"\n'
+                if (before.count(csp_anchor) == 1 and SHOP_PAYMENT_CSP not in before
+                        and after == before.replace(csp_anchor, csp_anchor + SHOP_PAYMENT_CSP, 1)):
+                    continue
                 anchor = b'\tredir /shop /shop/ 308\n'
                 if (before.count(anchor) == 1 and BALANCE_INGRESS not in before
                         and after == before.replace(anchor, BALANCE_INGRESS + anchor, 1)):

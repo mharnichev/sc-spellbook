@@ -663,6 +663,20 @@ sys.modules['alembic.script'].ScriptDirectory = types.SimpleNamespace(
                 caddy.write_bytes(bad)
                 self.assertFalse(validate(self.previous, self.release_root, shop_ingress=True))
 
+    def test_shop_payment_csp_rejects_a_wildcard_or_unrelated_edit(self):
+        self.prepare_shop_ingress()
+        from runpy import run_path
+        module = run_path(str(self.release_root / 'scripts/admin-only-release.py'))
+        before = b'\theader @shop_pages Cache-Control "no-store, private"\n'
+        after = before + module['SHOP_PAYMENT_CSP']
+        (self.previous / 'caddy/Caddyfile').write_bytes(before)
+        caddy = self.release_root / 'caddy/Caddyfile'
+        for candidate, expected in ((after, True),
+                                    (after.replace(b'pay.monobank.ua', b'*.monobank.ua'), False),
+                                    (after + b'# unrelated change\n', False)):
+            caddy.write_bytes(candidate)
+            self.assertEqual(bool(module['admin_image'](self.previous, self.release_root, shop_ingress=True)), expected)
+
     def test_shop_ingress_rejects_other_pins_and_unrelated_ingress_changes_before_docker(self):
         mutations = ['BACKEND_IMAGE', 'ADMIN_APP_IMAGE', 'PUBLIC_SITE_IMAGE', 'BLOG_IMAGE', 'CADDY_IMAGE', 'POSTGRES_IMAGE',
                      'compose', 'extra-caddy', 'missing-quote', 'duplicate-quote', 'quote-in-comment', 'wildcard',
