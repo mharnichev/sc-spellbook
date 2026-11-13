@@ -61,6 +61,20 @@ soulcuts.com.ua {
 	handle @shop_api {
 		import direct_api
 	}
+	@shop_balance_login {
+		method POST
+		path /api/v1/shop-balance/login
+	}
+	handle @shop_balance_login {
+		import direct_api
+	}
+	@shop_balance_entries {
+		method GET POST
+		path /api/v1/shop-balance/entries
+	}
+	handle @shop_balance_entries {
+		import direct_api
+	}
 	redir /shop /shop/ 308
 	handle /shop/* {
 		reverse_proxy shop:3000 {

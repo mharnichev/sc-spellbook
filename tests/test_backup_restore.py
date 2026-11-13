@@ -644,6 +644,25 @@ sys.modules['alembic.script'].ScriptDirectory = types.SimpleNamespace(
         self.assertFalse(any('run' in c or 'stop' in c for c in calls))
         self.assertEqual((self.path / 'current').resolve(), self.release_root)
 
+    def test_balance_ingress_accepts_only_exact_method_and_path_block(self):
+        self.prepare_shop_ingress()
+        from runpy import run_path
+        module = run_path(str(self.release_root / 'scripts/admin-only-release.py'))
+        anchor = b'\tredir /shop /shop/ 308\n'
+        before = b'\t@shop_api path /api/v1/public/products /api/v1/public/shop-promotions/quote\n' + anchor
+        after = before.replace(anchor, module['BALANCE_INGRESS'] + anchor)
+        (self.previous / 'caddy/Caddyfile').write_bytes(before)
+        caddy = self.release_root / 'caddy/Caddyfile'
+        validate = module['admin_image']
+        caddy.write_bytes(after)
+        self.assertTrue(validate(self.previous, self.release_root, shop_ingress=True))
+        for bad in (after.replace(b'entries\n', b'entries/*\n'),
+                    after.replace(b'method GET POST', b'method GET POST PUT'),
+                    after + b'# unrelated edit\n'):
+            with self.subTest(bad=bad):
+                caddy.write_bytes(bad)
+                self.assertFalse(validate(self.previous, self.release_root, shop_ingress=True))
+
     def test_shop_ingress_rejects_other_pins_and_unrelated_ingress_changes_before_docker(self):
         mutations = ['BACKEND_IMAGE', 'ADMIN_APP_IMAGE', 'PUBLIC_SITE_IMAGE', 'BLOG_IMAGE', 'CADDY_IMAGE', 'POSTGRES_IMAGE',
                      'compose', 'extra-caddy', 'missing-quote', 'duplicate-quote', 'quote-in-comment', 'wildcard',
