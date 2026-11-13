@@ -8,6 +8,13 @@ spec = importlib.util.spec_from_file_location('release_images', Path(__file__).w
 images = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(images)
 
+BALANCE_INGRESS = (
+    b'\t@shop_balance_login {\n\t\tmethod POST\n\t\tpath /api/v1/shop-balance/login\n\t}\n'
+    b'\thandle @shop_balance_login {\n\t\timport direct_api\n\t}\n'
+    b'\t@shop_balance_entries {\n\t\tmethod GET POST\n\t\tpath /api/v1/shop-balance/entries\n\t}\n'
+    b'\thandle @shop_balance_entries {\n\t\timport direct_api\n\t}\n'
+)
+
 
 def admin_image(previous, current, *, allow_unchanged=False, backend_admin=False,
                 admin_shop=False, select_shop=False, shop_ingress=False,
@@ -45,6 +52,10 @@ def admin_image(previous, current, *, allow_unchanged=False, backend_admin=False
                     and after == before.replace(runtime_override, b'', 1)):
                 continue
             if shop_ingress and name == 'caddy/Caddyfile':
+                anchor = b'\tredir /shop /shop/ 308\n'
+                if (before.count(anchor) == 1 and BALANCE_INGRESS not in before
+                        and after == before.replace(anchor, BALANCE_INGRESS + anchor, 1)):
+                    continue
                 token = b' /api/v1/public/shop-promotions/quote'
                 matchers = [line for line in after.splitlines() if line.startswith(b'\t@shop_api path ')]
                 if len(matchers) != 1 or token.strip() not in matchers[0].split()[2:] or after.count(token) != 1:
