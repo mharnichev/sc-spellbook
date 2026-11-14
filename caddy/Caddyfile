@@ -123,6 +123,11 @@ admin.soulcuts.com.ua {
 
 api.soulcuts.com.ua {
 	import security_headers
+	@telegram_booking_document path /api/v1/public/telegram/booking-app
+	header @telegram_booking_document {
+		-X-Frame-Options
+		Content-Security-Policy "frame-ancestors https://web.telegram.org"
+	}
 	encode zstd gzip
 	import direct_api
 }

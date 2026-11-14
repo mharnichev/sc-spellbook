@@ -88,6 +88,19 @@ class CaddyPilotTests(unittest.TestCase):
                 self.assertEqual(result.stdout, f'api-ingress-backend|{path}|Bearer synthetic|127.0.0.1')
                 self.assertIn('Cache-Control: no-store, private', result.stderr)
 
+    def test_telegram_web_can_embed_only_the_booking_document(self):
+        host = 'api.soulcuts.com.ua'
+        path = '/api/v1/public/telegram/booking-app'
+        result = self.request(path, host)
+        self.assertTrue(result.stdout.startswith('api-ingress-backend|'))
+        self.assertIn('Content-Security-Policy: frame-ancestors https://web.telegram.org', result.stderr)
+        self.assertNotIn('X-Frame-Options:', result.stderr)
+        for neighbor in ('/assets/cy-grotesk-600.woff2', '/visits'):
+            with self.subTest(path=path + neighbor):
+                headers = self.request(path + neighbor, host).stderr
+                self.assertIn('X-Frame-Options: DENY', headers)
+                self.assertNotIn('frame-ancestors https://web.telegram.org', headers)
+
     def test_shop_redirect_and_www_support_exception(self):
         result = self.request('/shop?x=1', check=False)
         self.assertIn('308', result.stderr)
