@@ -14,8 +14,8 @@ import tempfile
 import time
 
 
-SOURCE = '0160_shop_mono_unpaid'
-HEAD = '0161_shop_mono_expired'
+SOURCE = '0161_shop_mono_expired'
+HEAD = '0162_shop_balance_edits'
 FLAG = 'MASTER_MONO_INVOICE_CREATE_ENABLED'
 REFUND_FLAG = 'SHOP_MONO_CHECKBOX_REFUNDS_ENABLED'
 CHECKOUT_FLAGS = ('SHOP_CHECKOUT_ENABLED', 'SHOP_CHECKOUT_PILOT_ENABLED')
