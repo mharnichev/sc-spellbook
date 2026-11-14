@@ -122,7 +122,6 @@ services:
       - ${POSTGRES_ENV_FILE:-/opt/soulcuts/env/postgres.env}
       - ${BACKEND_ENV_FILE:-/opt/soulcuts/env/backend.env}
     environment:
-      TELEGRAM_BOOKING_MINI_APP_URL: https://api.soulcuts.com.ua/api/v1/public/telegram/booking-app
       APP_ENV: production
       DEBUG: "false"
       POSTGRES_HOST: postgres
