@@ -74,6 +74,11 @@ if [[ -f "${ROOT_DIR}/versions/deploy.scope" ]]; then
       admin_only_image="$(python3 "${ROOT_DIR}/scripts/admin-only-release.py" "${PREVIOUS_RELEASE}" "${ROOT_DIR}" --allow-unchanged)" ;;
     backend-admin)
       admin_only_image="$(python3 "${ROOT_DIR}/scripts/admin-only-release.py" "${PREVIOUS_RELEASE}" "${ROOT_DIR}" --backend-admin)" ;;
+    backend-shop)
+      admin_only_image="$(python3 "${ROOT_DIR}/scripts/admin-only-release.py" "${PREVIOUS_RELEASE}" "${ROOT_DIR}" --backend-shop)"
+      shop_only_image="$(python3 "${ROOT_DIR}/scripts/admin-only-release.py" "${PREVIOUS_RELEASE}" "${ROOT_DIR}" --backend-shop --shop-image)"
+      [[ -n "${shop_only_image}" ]] || { echo 'Required backend/Shop scope refused.' >&2; exit 1; }
+      export SHOP_IMAGE="${shop_only_image}" ;;
     public-admin)
       admin_only_image="$(python3 "${ROOT_DIR}/scripts/admin-only-release.py" "${PREVIOUS_RELEASE}" "${ROOT_DIR}" --public-admin --allow-unchanged)"
       public_only_image="$(python3 "${ROOT_DIR}/scripts/admin-only-release.py" "${PREVIOUS_RELEASE}" "${ROOT_DIR}" --public-admin --allow-unchanged --public-image)"
@@ -130,6 +135,8 @@ export APP_DIR COMPOSE_PROJECT_NAME="${PROJECT_NAME}"
 if [[ "${BACKEND_CHANGED}" == true ]]; then
 if [[ "${REQUIRED_SCOPE}" == backend-admin ]]; then
   compose --profile release pull backend booking-sms-reminders migrate admin-app
+elif [[ "${REQUIRED_SCOPE}" == backend-shop ]]; then
+  compose --profile release pull backend booking-sms-reminders migrate shop
 else
   compose --profile release pull
 fi
@@ -193,6 +200,8 @@ compose --profile release run --rm --no-deps migrate
 compose --profile release run --rm --no-deps --entrypoint python migrate -m app.core.migration_readiness
 if [[ "${REQUIRED_SCOPE}" == backend-admin ]]; then
   compose up -d --no-deps backend booking-sms-reminders admin-app
+elif [[ "${REQUIRED_SCOPE}" == backend-shop ]]; then
+  compose up -d --no-deps backend booking-sms-reminders shop
 else
   compose up -d --remove-orphans
 fi

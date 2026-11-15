@@ -622,6 +622,26 @@ sys.modules['alembic.script'].ScriptDirectory = types.SimpleNamespace(
                 self.assertEqual((test.path / 'current').resolve(), test.previous)
                 self.assertFalse(any('run' in c or 'stop' in c for c in test.operations()))
 
+    def test_backend_shop_requires_exact_images_and_unchanged_shared_config(self):
+        self.prepare_admin_shop()
+        previous_pins = self.previous / 'versions/production.env'
+        old = previous_pins.read_text()
+        expected = old.replace('admin_app_image@sha256:' + '6' * 64,
+                               'admin_app_image@sha256:' + '3' * 64)
+        expected = expected.replace('backend_image@sha256:' + '1' * 64,
+                                    'backend_image@sha256:' + '7' * 64)
+        from runpy import run_path
+        validate = run_path(str(self.release_root / 'scripts/admin-only-release.py'))['admin_image']
+        previous_pins.write_text(expected)
+        self.assertIn('shop_image@sha256:' + '2' * 64,
+                      validate(self.previous, self.release_root, backend_shop=True, select_shop=True))
+        previous_pins.write_text(old)
+        self.assertFalse(validate(self.previous, self.release_root, backend_shop=True))
+        previous_pins.write_text(expected)
+        caddy = self.release_root / 'caddy/Caddyfile'
+        caddy.write_text(caddy.read_text() + '# unexpected edit\n')
+        self.assertFalse(validate(self.previous, self.release_root, backend_shop=True))
+
     def prepare_shop_ingress(self):
         self.prepare_admin_shop()
         self.env.pop('EXPECT_FRONTEND_LITERALS')

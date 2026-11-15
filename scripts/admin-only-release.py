@@ -20,16 +20,16 @@ SHOP_PAYMENT_CSP = (
 )
 
 
-def admin_image(previous, current, *, allow_unchanged=False, backend_admin=False,
+def admin_image(previous, current, *, allow_unchanged=False, backend_admin=False, backend_shop=False,
                 admin_shop=False, select_shop=False, shop_ingress=False,
                 select_caddy=False, public_admin=False, select_public=False):
     try:
         old = images.pins(previous / 'versions/production.env')
         new = images.pins(current / 'versions/production.env')
         changed = {key for key in new if new[key] != old[key]}
-        if sum((backend_admin, admin_shop, shop_ingress, public_admin)) > 1 or sum((select_shop, select_caddy, select_public)) > 1:
+        if sum((backend_admin, backend_shop, admin_shop, shop_ingress, public_admin)) > 1 or sum((select_shop, select_caddy, select_public)) > 1:
             return ''
-        if (select_shop and not (admin_shop or shop_ingress)
+        if (select_shop and not (admin_shop or backend_shop or shop_ingress)
                 or select_caddy and not shop_ingress or select_public and not public_admin):
             return ''
         if public_admin:
@@ -40,6 +40,9 @@ def admin_image(previous, current, *, allow_unchanged=False, backend_admin=False
                 return ''
         elif admin_shop:
             if changed - {'ADMIN_APP_IMAGE', 'SHOP_IMAGE'} or (not changed and not allow_unchanged):
+                return ''
+        elif backend_shop:
+            if changed != {'BACKEND_IMAGE', 'SHOP_IMAGE'}:
                 return ''
         elif backend_admin:
             if 'BACKEND_IMAGE' not in changed or changed - {'BACKEND_IMAGE', 'ADMIN_APP_IMAGE'}:
@@ -81,6 +84,7 @@ if __name__ == '__main__':
     print(admin_image(Path(sys.argv[1]), Path(sys.argv[2]),
                       allow_unchanged='--allow-unchanged' in sys.argv[3:],
                       backend_admin='--backend-admin' in sys.argv[3:],
+                      backend_shop='--backend-shop' in sys.argv[3:],
                       admin_shop='--admin-shop' in sys.argv[3:],
                       shop_ingress='--shop-ingress' in sys.argv[3:],
                       select_caddy='--caddy-image' in sys.argv[3:],
