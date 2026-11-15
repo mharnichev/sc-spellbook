@@ -14,7 +14,7 @@ import tempfile
 import time
 
 
-SOURCE = '0166_shop_mono_webhook'
+SOURCE = '0167_product_usage'
 HEAD = '0167_product_usage'
 FLAG = 'MASTER_MONO_INVOICE_CREATE_ENABLED'
 REFUND_FLAG = 'SHOP_MONO_CHECKBOX_REFUNDS_ENABLED'
