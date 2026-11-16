@@ -664,6 +664,42 @@ sys.modules['alembic.script'].ScriptDirectory = types.SimpleNamespace(
         self.assertFalse(any('run' in c or 'stop' in c for c in calls))
         self.assertEqual((self.path / 'current').resolve(), self.release_root)
 
+    def test_shop_seo_replaces_only_shop_public_site_and_caddy(self):
+        self.prepare_shop_ingress()
+        self.env.pop('EXPECT_SHOP_INGRESS_LITERALS')
+        old = self.previous / 'versions/production.env'
+        old.write_text('\n'.join(key + '=' + ('local/site@sha256:' + '9' * 64 if key == 'PUBLIC_SITE_IMAGE' else value)
+                                 for key, value in (line.split('=', 1) for line in old.read_text().splitlines())) + '\n')
+        line = '\theader @shop_pages X-Robots-Tag "noindex, nofollow, noarchive"\n'
+        before = '\theader @shop_pages Cache-Control "no-store, private"\n'
+        (self.previous / 'caddy/Caddyfile').write_text(before + line)
+        caddy = self.release_root / 'caddy/Caddyfile'
+        caddy.write_text(before)
+        (self.release_root / 'versions/deploy.scope').write_text('shop-seo\n')
+        caddy.write_text(before + '# unrelated edit\n')
+        self.assertNotEqual(self.run_script('deploy.sh').returncode, 0)
+        self.assertFalse(self.calls.exists())
+        caddy.write_text(before)
+        pins = self.release_root / 'versions/production.env'
+        expected = pins.read_text()
+        pins.write_text('\n'.join('PUBLIC_SITE_IMAGE=local/site:latest' if line.startswith('PUBLIC_SITE_IMAGE=') else line
+                                  for line in expected.splitlines()) + '\n')
+        self.assertNotEqual(self.run_script('deploy.sh').returncode, 0)
+        self.assertFalse(self.calls.exists())
+        pins.write_text(expected)
+        result = self.run_script('deploy.sh')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.operations()
+        self.assertEqual([c[c.index('pull'):] for c in calls if 'pull' in c], [['pull', 'public-site', 'shop', 'caddy']])
+        self.assertEqual([c[c.index('up'):] for c in calls if 'up' in c], [['up', '-d', '--no-deps', 'public-site', 'shop', 'caddy']])
+        self.assertFalse(any('run' in c or 'stop' in c for c in calls))
+        self.assertEqual((self.path / 'current').resolve(), self.release_root)
+        self.calls.unlink()
+        retry = self.run_script('deploy.sh')
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertEqual([c[c.index('up'):] for c in self.operations() if 'up' in c],
+                         [['up', '-d', '--no-deps', 'public-site', 'shop', 'caddy']])
+
     def test_balance_ingress_accepts_only_exact_method_and_path_block(self):
         self.prepare_shop_ingress()
         from runpy import run_path

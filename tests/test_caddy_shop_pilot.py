@@ -24,6 +24,8 @@ class CaddyPilotTests(unittest.TestCase):
             source = source.replace(upstream, f'127.0.0.1:{port}')
             label = upstream.split(':')[0]
             missing = '\n respond /media/products/missing.webp "missing" 404' if label == 'api-ingress-backend' else ''
+            if label == 'shop':
+                missing += '\n header /shop/favorites X-Robots-Tag "noindex, nofollow"'
             source += f'\nhttp://:{port} {{{missing}\n header X-Fixture-Upstream "{label}"\n respond "{label}|{{http.request.uri}}|{{http.request.header.Authorization}}|{{http.request.header.X-Forwarded-For}}"\n}}\n'
         path = Path(cls.temp.name) / 'Caddyfile'
         path.write_text(source)
@@ -56,12 +58,16 @@ class CaddyPilotTests(unittest.TestCase):
 
     def test_shop_and_blog_prefixes_not_stripped(self):
         for path, upstream in [('/shop/', 'shop'), ('/shop/_nuxt/app.js', 'shop'),
-                               ('/blog/story?x=1', 'blog'), ('/services', 'public-site')]:
+                               ('/shop/sitemap.xml', 'shop'), ('/blog/story?x=1', 'blog'), ('/services', 'public-site')]:
             with self.subTest(path=path):
                 result = self.request(path)
                 self.assertTrue(result.stdout.startswith(f'{upstream}|{path}|'), result.stdout)
                 if path.startswith('/shop/'):
-                    self.assertIn('X-Robots-Tag: noindex, nofollow, noarchive', result.stderr)
+                    self.assertNotIn('x-robots-tag:', result.stderr.lower())
+                    self.assertIn('Cache-Control: no-store, private', result.stderr)
+
+    def test_shop_preserves_private_route_noindex_from_upstream(self):
+        self.assertIn('x-robots-tag: noindex, nofollow', self.request('/shop/favorites').stderr.lower())
 
     def test_shop_payment_frame_origins_are_exact(self):
         expected = 'Content-Security-Policy: frame-src https://pay.mbnk.biz https://pay.monobank.ua'

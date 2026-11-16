@@ -2,6 +2,7 @@
 """Validate narrow application scopes against immutable pins and shared inputs."""
 import importlib.util
 from pathlib import Path
+import re
 import sys
 
 spec = importlib.util.spec_from_file_location('release_images', Path(__file__).with_name('verify-deployed-images.py'))
@@ -14,6 +15,7 @@ BALANCE_INGRESS = (
     b'\t@shop_balance_entries {\n\t\tmethod GET POST\n\t\tpath /api/v1/shop-balance/entries\n\t}\n'
     b'\thandle @shop_balance_entries {\n\t\timport direct_api\n\t}\n'
 )
+SHOP_PILOT_NOINDEX = b'\theader @shop_pages X-Robots-Tag "noindex, nofollow, noarchive"\n'
 SHOP_PAYMENT_CSP = (
     b'\t@shop_payment_pages path /shop/checkout /shop/checkout/* /shop/payment/* /shop/cabinet/orders/*\n'
     b'\theader @shop_payment_pages Content-Security-Policy "frame-src https://pay.mbnk.biz https://pay.monobank.ua"\n'
@@ -22,17 +24,23 @@ SHOP_PAYMENT_CSP = (
 
 def admin_image(previous, current, *, allow_unchanged=False, backend_admin=False, backend_shop=False,
                 admin_shop=False, select_shop=False, shop_ingress=False,
-                select_caddy=False, public_admin=False, select_public=False):
+                select_caddy=False, public_admin=False, select_public=False, shop_seo=False):
     try:
         old = images.pins(previous / 'versions/production.env')
         new = images.pins(current / 'versions/production.env')
         changed = {key for key in new if new[key] != old[key]}
-        if sum((backend_admin, backend_shop, admin_shop, shop_ingress, public_admin)) > 1 or sum((select_shop, select_caddy, select_public)) > 1:
+        if sum((backend_admin, backend_shop, admin_shop, shop_ingress, public_admin, shop_seo)) > 1 or sum((select_shop, select_caddy, select_public)) > 1:
             return ''
-        if (select_shop and not (admin_shop or backend_shop or shop_ingress)
-                or select_caddy and not shop_ingress or select_public and not public_admin):
+        if (select_shop and not (admin_shop or backend_shop or shop_ingress or shop_seo)
+                or select_caddy and not (shop_ingress or shop_seo)
+                or select_public and not (public_admin or shop_seo)):
             return ''
-        if public_admin:
+        if shop_seo:
+            if changed not in (set(), {'SHOP_IMAGE', 'PUBLIC_SITE_IMAGE'}):
+                return ''
+            if not re.fullmatch(r'[^@\s]+@sha256:[0-9a-f]{64}', new['PUBLIC_SITE_IMAGE']):
+                return ''
+        elif public_admin:
             if changed - {'PUBLIC_SITE_IMAGE', 'ADMIN_APP_IMAGE'} or (not changed and not allow_unchanged):
                 return ''
         elif shop_ingress:
@@ -58,7 +66,13 @@ def admin_image(previous, current, *, allow_unchanged=False, backend_admin=False
                     and runtime_override in shop_block
                     and after == before.replace(runtime_override, b'', 1)):
                 continue
-            if shop_ingress and name == 'caddy/Caddyfile':
+            if shop_seo and name == 'caddy/Caddyfile':
+                if not changed:
+                    if before != after or SHOP_PILOT_NOINDEX in after:
+                        return ''
+                elif before.count(SHOP_PILOT_NOINDEX) != 1 or after != before.replace(SHOP_PILOT_NOINDEX, b'', 1):
+                    return ''
+            elif shop_ingress and name == 'caddy/Caddyfile':
                 csp_anchor = b'\theader @shop_pages Cache-Control "no-store, private"\n'
                 if (before.count(csp_anchor) == 1 and SHOP_PAYMENT_CSP not in before
                         and after == before.replace(csp_anchor, csp_anchor + SHOP_PAYMENT_CSP, 1)):
@@ -87,6 +101,7 @@ if __name__ == '__main__':
                       backend_shop='--backend-shop' in sys.argv[3:],
                       admin_shop='--admin-shop' in sys.argv[3:],
                       shop_ingress='--shop-ingress' in sys.argv[3:],
+                      shop_seo='--shop-seo' in sys.argv[3:],
                       select_caddy='--caddy-image' in sys.argv[3:],
                       public_admin='--public-admin' in sys.argv[3:],
                       select_public='--public-image' in sys.argv[3:],

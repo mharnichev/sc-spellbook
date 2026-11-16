@@ -53,7 +53,6 @@ soulcuts.com.ua {
 	header /robots.txt >Cache-Control "no-store"
 	respond /support-widget 404
 	@shop_pages path /shop /shop/*
-	header @shop_pages X-Robots-Tag "noindex, nofollow, noarchive"
 	header @shop_pages Cache-Control "no-store, private"
 	@shop_payment_pages path /shop/checkout /shop/checkout/* /shop/payment/* /shop/cabinet/orders/*
 	header @shop_payment_pages Content-Security-Policy "frame-src https://pay.mbnk.biz https://pay.monobank.ua"
