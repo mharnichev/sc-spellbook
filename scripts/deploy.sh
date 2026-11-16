@@ -89,6 +89,13 @@ if [[ -f "${ROOT_DIR}/versions/deploy.scope" ]]; then
       shop_only_image="$(python3 "${ROOT_DIR}/scripts/admin-only-release.py" "${PREVIOUS_RELEASE}" "${ROOT_DIR}" --admin-shop --allow-unchanged --shop-image)"
       [[ -n "${shop_only_image}" ]] || { echo 'Required Shop scope refused.' >&2; exit 1; }
       export SHOP_IMAGE="${shop_only_image}" ;;
+    shop-seo)
+      admin_only_image="$(python3 "${ROOT_DIR}/scripts/admin-only-release.py" "${PREVIOUS_RELEASE}" "${ROOT_DIR}" --shop-seo)"
+      shop_only_image="$(python3 "${ROOT_DIR}/scripts/admin-only-release.py" "${PREVIOUS_RELEASE}" "${ROOT_DIR}" --shop-seo --shop-image)"
+      public_only_image="$(python3 "${ROOT_DIR}/scripts/admin-only-release.py" "${PREVIOUS_RELEASE}" "${ROOT_DIR}" --shop-seo --public-image)"
+      caddy_only_image="$(python3 "${ROOT_DIR}/scripts/admin-only-release.py" "${PREVIOUS_RELEASE}" "${ROOT_DIR}" --shop-seo --caddy-image)"
+      [[ -n "${shop_only_image}" && -n "${public_only_image}" && -n "${caddy_only_image}" ]] || { echo 'Required Shop SEO scope refused.' >&2; exit 1; }
+      export SHOP_IMAGE="${shop_only_image}" PUBLIC_SITE_IMAGE="${public_only_image}" CADDY_IMAGE="${caddy_only_image}" ;;
     shop-ingress)
       admin_only_image="$(python3 "${ROOT_DIR}/scripts/admin-only-release.py" "${PREVIOUS_RELEASE}" "${ROOT_DIR}" --shop-ingress --allow-unchanged)"
       shop_only_image="$(python3 "${ROOT_DIR}/scripts/admin-only-release.py" "${PREVIOUS_RELEASE}" "${ROOT_DIR}" --shop-ingress --allow-unchanged --shop-image)"
@@ -213,6 +220,8 @@ else
     export ADMIN_APP_IMAGE="${admin_only_image}"
     if [[ "${REQUIRED_SCOPE}" == public-admin ]]; then
       compose pull public-site admin-app
+    elif [[ "${REQUIRED_SCOPE}" == shop-seo ]]; then
+      compose pull public-site shop caddy
     elif [[ "${REQUIRED_SCOPE}" == shop-ingress ]]; then
       compose pull shop caddy
     elif [[ "${REQUIRED_SCOPE}" == admin-shop ]]; then
@@ -229,6 +238,8 @@ else
     # Only Shop ingress changes require replacing Caddy's release mount.
     if [[ "${REQUIRED_SCOPE}" == public-admin ]]; then
       compose up -d --no-deps public-site admin-app
+    elif [[ "${REQUIRED_SCOPE}" == shop-seo ]]; then
+      compose up -d --no-deps public-site shop caddy
     elif [[ "${REQUIRED_SCOPE}" == shop-ingress ]]; then
       compose up -d --no-deps shop caddy
     elif [[ "${REQUIRED_SCOPE}" == admin-shop ]]; then
