@@ -54,6 +54,12 @@ Neither tree may replace the running release wholesale. Originals are preserved.
 
 ## Gates
 
+This first promotion updates Shop only. Backend promotion is deferred: booking
+CI 44177522464 produced 1520 passed and 11 failed. Eight failures concern older
+usage/usage_en wire/snapshot expectations and three concern combined-suite
+Monobank logging assertions. Owners received exact evidence for correction.
+The backend pin remains the current production image until a fully green retry.
+
 Owner handoff, exact-source tests and independent review precede image
 publication and the normal sc-spellbook release. Preserve current session,
 checkout/pilot, DSN, provider configuration and all unrelated service pins.
