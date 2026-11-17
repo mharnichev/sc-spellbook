@@ -54,11 +54,15 @@ Neither tree may replace the running release wholesale. Originals are preserved.
 
 ## Gates
 
-This first promotion updates Shop only. Backend promotion is deferred: booking
+The first promotion updated Shop only (PR 134, deploy 44184615477, success).
+The initial backend promotion was deferred: booking
 CI 44177522464 produced 1520 passed and 11 failed. Eight failures concern older
 usage/usage_en wire/snapshot expectations and three concern combined-suite
 Monobank logging assertions. Owners received exact evidence for correction.
-The backend pin remains the current production image until a fully green retry.
+Owners subsequently supplied test-only corrections, preserving strict full
+equality and restoring logger state only within a caplog test. Final candidate
+e6d1e1993 passed image CI 44185160845. Broad retry 44185169789 must pass before
+this backend-only promotion. Shop and all other image pins stay unchanged.
 
 Owner handoff, exact-source tests and independent review precede image
 publication and the normal sc-spellbook release. Preserve current session,
@@ -66,7 +70,7 @@ checkout/pilot, DSN, provider configuration and all unrelated service pins.
 
 ## Verification Evidence
 
-- Backend PR 44, candidate a50c07c12: four optimization files, two name-parser
+- Backend PR 44, final candidate e6d1e1993: four optimization files, two name-parser
   files, catalog regression tests and an exact tracking-response expectation.
   No production schema/data change. Additional CI verifies no skipped tests.
 - Integrated local PostgreSQL run: 115 passed in 230.18 seconds. Supplemental
@@ -91,3 +95,10 @@ checkout/pilot, DSN, provider configuration and all unrelated service pins.
 - Root robots already advertises the Shop sitemap on the public endpoint;
   divergence of that line between app branches is source-sync debt, not missing
   public functionality. No Barbershop image update is required for that line.
+- Test-only CI repairs: golden usage/usage_en fields reproduced red/green on
+  both production and candidate; migration snapshot explicitly expects those
+  additive nullable fields; Alembic's disabled logger is restored by monkeypatch
+  for only the log contract test. Combined full migration/provider modules:
+  118 passed. No production application behavior was changed by these repairs.
+- PR 44 merge-ref tree and final source tree both hash to
+  0e85049b4c5359851e55370e450d8e5712cc7133.
