@@ -34,8 +34,11 @@ Ordinary operators retain their actual sale amount, not the salon comparison.
 - Required broad backend CI44704428620 must pass before promotion. Its merge
   tree matches exact source0c524fdee7c29143b4d8dd062accf80054cec7ae.
 - Compatible Backoffice candidate PR86 must pass all mandatory tests before
-  starting this paired release. The first browser run44704448313 failed and is
-  being diagnosed by the development owner; no fixture or auth guard bypass.
+  starting this paired release. First browser run44704448313 failed because
+  seven synthetic admin profiles omitted the required email field. The owner
+  reproduced this on candidate and production baseline; test-only correction
+  adds a synthetic non-allowlisted email, preserving auth and assertions.
+  Final FE sourcefb7f37b5a is checked by full Linux run44706859411.
 - User separately approved the minimal local TrashIcon correction that restores
   an existing Backoffice unit gate. All725 candidate unit tests passed.
 
